@@ -2,8 +2,12 @@
 
 从多元时间序列数据集中创建滑动窗口（历史, 目标）对，
 遵循 TimeGrad/CSDI 的预测长度和训练/验证/测试集划分惯例。
+
+数据集存储在项目根目录的 datasets/ 文件夹下，首次运行自动下载。
 """
 
+import os
+from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
 import numpy as np
@@ -11,9 +15,13 @@ import torch
 from gluonts.dataset.repository import get_dataset as gluonts_get_dataset
 from torch.utils.data import DataLoader, Dataset, TensorDataset
 
+# 项目根目录下的数据集存放路径
+_PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
+DATA_DIR = _PROJECT_ROOT / "datasets"
+
 
 def _get_gluonts_dataset(name: str):
-    """按名称加载 GluonTS 内置数据集。
+    """按名称加载 GluonTS 内置数据集（存放在项目 datasets/ 目录下）。
 
     Args:
         name: 数据集名称（solar, electricity, traffic, taxi, wiki）。
@@ -30,7 +38,16 @@ def _get_gluonts_dataset(name: str):
         "wikipedia": "wiki-rolling_nips",
     }
     gluonts_name = name_map.get(name, name)
-    return gluonts_get_dataset(gluonts_name, regenerate=False)
+
+    # 确保 datasets 目录存在
+    os.makedirs(str(DATA_DIR), exist_ok=True)
+
+    # 指定下载路径为项目内的 datasets/ 目录
+    return gluonts_get_dataset(
+        gluonts_name,
+        path=str(DATA_DIR),
+        regenerate=False,
+    )
 
 
 def _rolling_window(
