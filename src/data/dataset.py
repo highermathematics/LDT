@@ -8,7 +8,7 @@
 
 import os
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, Optional, Tuple
 
 import numpy as np
 import torch
@@ -45,40 +45,9 @@ def _get_gluonts_dataset(name: str):
     # 指定下载路径为项目内的 datasets/ 目录
     return gluonts_get_dataset(
         gluonts_name,
-        path=str(DATA_DIR),
+        path=DATA_DIR,
         regenerate=False,
     )
-
-
-def _rolling_window(
-    data: np.ndarray, lookback: int, horizon: int
-) -> Tuple[np.ndarray, np.ndarray]:
-    """从多元时间序列创建滑动窗口对。
-
-    Args:
-        data: 完整时间序列，形状为 [total_length, d]。
-        lookback: 历史时间步数 T。
-        horizon: 待预测的未来时间步数 t。
-
-    Returns:
-        (X, Y) 元组，X ∈ [N, T, d], Y ∈ [N, t, d]。
-    """
-    total_len = lookback + horizon
-    if data.shape[0] < total_len:
-        raise ValueError(
-            f"时间序列太短（{data.shape[0]}），"
-            f"无法满足 lookback={lookback} + horizon={horizon}"
-        )
-
-    N = data.shape[0] - total_len + 1
-    X = np.zeros((N, lookback, data.shape[1]), dtype=np.float32)
-    Y = np.zeros((N, horizon, data.shape[1]), dtype=np.float32)
-
-    for i in range(N):
-        X[i] = data[i: i + lookback]
-        Y[i] = data[i + lookback: i + total_len]
-
-    return X, Y
 
 
 def load_multivariate_data(
@@ -88,7 +57,8 @@ def load_multivariate_data(
 ) -> Tuple[np.ndarray, np.ndarray, np.ndarray, int]:
     """加载并准备多元时间序列数据。
 
-    加载 GluonTS 数据集并创建用于训练、验证和测试的滑动窗口划分。
+    GluonTS 中数据以多条单变量序列形式存储，本函数将其合并为
+    一条多元序列 [总时间步, 特征维度 d]，然后创建滑动窗口。
 
     Args:
         name: 数据集名称（solar, electricity, traffic, taxi, wikipedia）。
@@ -97,8 +67,7 @@ def load_multivariate_data(
 
     Returns:
         (train_data, val_data, test_data, dimension) 元组，
-        每个划分是形状为 [N, total_len, d] 的 numpy 数组，
-        total_len = lookback_window + prediction_length。
+        每个划分是形状为 [N, T+t, d] 的 numpy 数组。
     """
     if lookback_window is None:
         lookback_window = 4 * prediction_length
@@ -108,39 +77,62 @@ def load_multivariate_data(
     # 从 GluonTS 加载
     gluonts_data = _get_gluonts_dataset(name)
 
-    # 提取时间序列数组
-    def extract_series(entries) -> List[np.ndarray]:
-        """从 GluonTS 条目中提取目标值。"""
-        series_list = []
+    def _stack_multivariate(entries, num_series: Optional[int] = None) -> np.ndarray:
+        """将多条单变量 GluonTS 序列合并为一条多元序列。
+
+        GluonTS 中每条 entry["target"] 形状为 [1, timesteps]，
+        将所有序列对齐到相同长度后堆叠为 [timesteps, d]。
+
+        Args:
+            entries: GluonTS 数据集条目列表。
+            num_series: 使用的序列数量（None 表示全部使用）。
+        """
+        arrays = []
         for entry in entries:
-            vals = entry["target"].T  # [d, total_timesteps] → [total_timesteps, d]
-            if vals.ndim == 1:
-                vals = vals[:, np.newaxis]  # 单变量: [T, 1]
-            series_list.append(vals.astype(np.float32))
-        return series_list
+            vals = entry["target"]
+            if vals.ndim == 2:
+                vals = vals.squeeze(0)  # [1, T] → [T]
+            arrays.append(vals.astype(np.float32))
 
-    train_series = extract_series(gluonts_data.train)
-    test_series = extract_series(gluonts_data.test)
+        # 只取前 num_series 条（确保 train/test 维度一致）
+        if num_series is not None:
+            arrays = arrays[:num_series]
 
-    # 确定数据维度
-    dimension = train_series[0].shape[1]
+        # 对齐到最短长度
+        min_len = min(len(a) for a in arrays)
+        trimmed = [a[:min_len] for a in arrays]
 
-    def create_windows(series_list: List[np.ndarray]) -> np.ndarray:
-        """对每条序列应用滑动窗口并堆叠。"""
-        windows = []
-        for s in series_list:
-            if s.shape[0] >= total_len:
-                X, Y = _rolling_window(s, lookback_window, prediction_length)
-                windows.append(np.concatenate([X, Y], axis=1))  # [N, T+t, d]
-        if not windows:
+        # 堆叠为多元序列: [d, min_len] → [min_len, d]
+        stacked = np.stack(trimmed, axis=1)  # [min_len, d]
+        return stacked
+
+    # 确保 train/test 使用相同数量的序列（取两者中的最小值）
+    n_train = len(gluonts_data.train)
+    n_test = len(gluonts_data.test)
+    n_common = min(n_train, n_test)
+    if n_train != n_test:
+        print(f"  [!] train 有 {n_train} 条序列, test 有 {n_test} 条序列, 截取前 {n_common} 条")
+
+    train_mv = _stack_multivariate(gluonts_data.train, num_series=n_common)
+    test_mv = _stack_multivariate(gluonts_data.test, num_series=n_common)
+
+    dimension = train_mv.shape[1]
+    print(f"  合并后多元序列: train={train_mv.shape}, test={test_mv.shape}, 维度 d={dimension}")
+
+    def _create_windows(data: np.ndarray) -> np.ndarray:
+        """在多元序列上创建滑动窗口 [N, T+t, d]。"""
+        if data.shape[0] < total_len:
             raise ValueError(
-                f"无法创建窗口。序列太短，不满足 total_len={total_len}。"
+                f"序列太短（{data.shape[0]}），不满足 total_len={total_len}。"
             )
-        return np.concatenate(windows, axis=0)
+        N = data.shape[0] - total_len + 1
+        windows = np.zeros((N, total_len, data.shape[1]), dtype=np.float32)
+        for i in range(N):
+            windows[i] = data[i: i + total_len]
+        return windows
 
-    # 创建窗口
-    all_train = create_windows(train_series)
-    all_test = create_windows(test_series)
+    all_train = _create_windows(train_mv)
+    all_test = _create_windows(test_mv)
 
     # 将训练集划分为 train/val（90%/10%）
     np.random.seed(42)

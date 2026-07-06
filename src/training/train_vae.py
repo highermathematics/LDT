@@ -79,14 +79,14 @@ def train_vae_epoch(
         optimizer_g.step()
 
         # ---------------------------------------------------------------
-        # 2. 训练判别器
+        # 2. 训练判别器（使用 detach 切断与 VN 参数的计算图）
         # ---------------------------------------------------------------
         optimizer_d.zero_grad()
 
         with torch.no_grad():
             y_recon_detached, _, _, _ = vae(Y_norm, stochastic=True)
 
-        disc_loss = vae.discriminator_loss(Y_norm, y_recon_detached)
+        disc_loss = vae.discriminator_loss(Y_norm.detach(), y_recon_detached)
         disc_loss.backward()
         optimizer_d.step()
 
