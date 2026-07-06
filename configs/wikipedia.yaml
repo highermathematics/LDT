@@ -1,0 +1,15 @@
+# Wikipedia dataset configuration
+dataset:
+  name: wikipedia
+  prediction_length: 24
+  lookback_window: 96
+  dimension: 2000
+
+vae:
+  latent_dim: 256
+  embed_dim: 256
+
+diffusion:
+  diffusion_steps: 100
+  embed_dim: 256
+  guidance_strength: 2.0

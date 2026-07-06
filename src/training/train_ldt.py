@@ -1,0 +1,286 @@
+"""第二阶段训练：潜在扩散 Transformer。
+
+在潜在空间中训练去噪网络 x̂_θ，使用第一阶段冻结的编码器。
+实现论文中的算法 1。
+"""
+
+import os
+from typing import Dict, Tuple
+
+import torch
+from torch.utils.data import DataLoader
+from tqdm import tqdm
+
+from src.config import Config
+from src.data.normalization import VarianceUpdateNorm
+from src.models.autoencoder import Encoder
+from src.models.diffusion import LDiffusion
+
+
+def train_ldt_epoch(
+    ldt: LDiffusion,
+    encoder: Encoder,
+    vn: VarianceUpdateNorm,
+    dataloader: DataLoader,
+    optimizer: torch.optim.Optimizer,
+    device: torch.device,
+    lookback: int,
+    horizon: int,
+    log_interval: int = 10,
+) -> Dict[str, float]:
+    """训练 LDT 一个 epoch。
+
+    Args:
+        ldt: 潜在扩散模型。
+        encoder: 冻结的 VAE 编码器。
+        vn: VN 归一化层。
+        dataloader: 训练数据加载器。
+        optimizer: 去噪网络优化器。
+        device: 计算设备。
+        lookback: 历史长度 T。
+        horizon: 预测长度 t。
+        log_interval: 日志记录间隔。
+
+    Returns:
+        平均指标字典。
+    """
+    ldt.train()
+    encoder.eval()
+
+    total_loss = 0.0
+    total_k = 0.0
+
+    pbar = tqdm(dataloader, desc="LDT 训练")
+    for batch_idx, (X, Y) in enumerate(pbar):
+        X = X.to(device)  # [B, T, d]
+        Y = Y.to(device)  # [B, t, d]
+
+        # 更新 VN 统计量
+        W = torch.cat([X, Y], dim=1)
+        vn.update_stats(W.detach())
+
+        # 获取统计量
+        E_hat, Var_hat = vn.get_stats()
+
+        # 归一化目标并编码到潜在空间
+        Y_norm = vn.normalize(Y, E_hat, Var_hat)
+        with torch.no_grad():
+            z_0 = encoder.encode(Y_norm)  # [B, t, m]
+
+        # 归一化历史窗口
+        X_norm = vn.normalize(
+            torch.cat([X, torch.zeros(X.shape[0], horizon, X.shape[2], device=device)], dim=1),
+            E_hat, Var_hat,
+        )[:, :lookback, :]  # [B, T, d]
+
+        # 训练步
+        optimizer.zero_grad()
+        loss, metrics = ldt.training_step(z_0, X_norm)
+        loss.backward()
+        torch.nn.utils.clip_grad_norm_(ldt.parameters(), max_norm=1.0)
+        optimizer.step()
+
+        total_loss += loss.item()
+        total_k += metrics["k_mean"]
+
+        if batch_idx % log_interval == 0:
+            pbar.set_postfix(loss=f"{loss.item():.4f}")
+
+    n = len(dataloader)
+    return {"loss": total_loss / n, "k_mean": total_k / n}
+
+
+@torch.no_grad()
+def validate_ldt(
+    ldt: LDiffusion,
+    encoder: Encoder,
+    vn: VarianceUpdateNorm,
+    dataloader: DataLoader,
+    device: torch.device,
+    lookback: int,
+    horizon: int,
+) -> Dict[str, float]:
+    """在验证集上验证 LDT。
+
+    Args:
+        ldt: 潜在扩散模型。
+        encoder: 冻结的 VAE 编码器。
+        vn: VN 层。
+        dataloader: 验证数据加载器。
+        device: 计算设备。
+        lookback: 历史长度 T。
+        horizon: 预测长度 t。
+
+    Returns:
+        包含 val_loss 的字典。
+    """
+    ldt.eval()
+    encoder.eval()
+
+    total_loss = 0.0
+
+    for X, Y in dataloader:
+        X = X.to(device)
+        Y = Y.to(device)
+
+        E_hat, Var_hat = vn.get_stats()
+        Y_norm = vn.normalize(Y, E_hat, Var_hat)
+        z_0 = encoder.encode(Y_norm)
+
+        X_norm = vn.normalize(
+            torch.cat([X, torch.zeros(X.shape[0], horizon, X.shape[2], device=device)], dim=1),
+            E_hat, Var_hat,
+        )[:, :lookback, :]
+
+        k = torch.randint(1, ldt.diffusion_steps + 1, (X.shape[0],), device=device)
+        noise = torch.randn_like(z_0)
+        z_k = ldt.noise_schedule.q_sample(z_0, k, noise)
+
+        z_self_cond = torch.zeros_like(z_0)
+        z_0_pred = ldt.denoiser(z_k, X_norm, z_self_cond, k)
+
+        total_loss += torch.nn.functional.mse_loss(z_0_pred, z_0).item()
+
+    return {"val_loss": total_loss / len(dataloader)}
+
+
+def train_stage2(
+    config: Config,
+    train_loader: DataLoader,
+    val_loader: DataLoader,
+    stage1_ckpt_dir: str,
+) -> str:
+    """运行第二阶段 LDT 训练。
+
+    Args:
+        config: 完整配置。
+        train_loader: 训练数据加载器。
+        val_loader: 验证数据加载器。
+        stage1_ckpt_dir: 第一阶段检查点目录路径。
+
+    Returns:
+        保存的检查点目录路径。
+    """
+    device = torch.device(config.training.device if torch.cuda.is_available() else "cpu")
+    print(f"第二阶段: 在 {device} 上训练 LDT")
+
+    d_data = config.dataset.dimension
+    d_latent = config.vae.latent_dim
+    d_model = config.diffusion.embed_dim
+    lookback = config.dataset.lookback_window
+    horizon = config.dataset.prediction_length
+
+    # 加载第一阶段检查点
+    stage1_path = os.path.join(stage1_ckpt_dir, "best_model.pt")
+    if not os.path.exists(stage1_path):
+        raise FileNotFoundError(f"第一阶段检查点未找到: {stage1_path}")
+
+    ckpt = torch.load(stage1_path, map_location=device)
+
+    # 创建冻结的编码器
+    vae_cfg = ckpt["vae_config"]
+    encoder = Encoder(
+        d_input=vae_cfg["d_data"],
+        d_latent=vae_cfg["d_latent"],
+        d_model=vae_cfg["d_model"],
+        n_heads=vae_cfg["n_heads"],
+        n_layers=vae_cfg["n_layers"],
+    ).to(device)
+    encoder.load_state_dict(ckpt["encoder"])
+    encoder.eval()
+    for param in encoder.parameters():
+        param.requires_grad = False
+
+    # VN 层
+    vn = VarianceUpdateNorm(num_features=d_data).to(device)
+    if "vn" in ckpt:
+        vn.load_state_dict(ckpt["vn"])
+    vn.eval()
+
+    # 创建 LDT 模型
+    ldt = LDiffusion(
+        d_data=d_data,
+        d_latent=d_latent,
+        d_model=d_model,
+        n_heads=config.diffusion.num_heads,
+        n_layers=config.diffusion.num_layers,
+        history_len=lookback,
+        pred_len=horizon,
+        diffusion_steps=config.diffusion.diffusion_steps,
+        beta_1=config.diffusion.beta_1,
+        beta_T=config.diffusion.beta_T,
+        p_uncond=config.diffusion.p_uncond,
+        self_cond_prob=config.diffusion.self_cond_prob,
+    ).to(device)
+
+    optimizer = torch.optim.Adam(ldt.parameters(), lr=config.diffusion.lr)
+
+    # 检查点目录
+    ckpt_dir = os.path.join(
+        config.training.checkpoint_dir, f"{config.dataset.name}_stage2"
+    )
+    os.makedirs(ckpt_dir, exist_ok=True)
+
+    best_val_loss = float("inf")
+    patience_counter = 0
+
+    for epoch in range(1, config.diffusion.epochs + 1):
+        # 每轮重置 VN 统计量
+        vn.reset_stats()
+        for X, Y in train_loader:
+            W = torch.cat([X, Y], dim=1).to(device)
+            vn.update_stats(W)
+            break
+
+        # 训练
+        train_metrics = train_ldt_epoch(
+            ldt, encoder, vn, train_loader, optimizer,
+            device, lookback, horizon, config.training.log_interval,
+        )
+
+        # 验证
+        val_metrics = validate_ldt(
+            ldt, encoder, vn, val_loader, device, lookback, horizon,
+        )
+
+        print(
+            f"Epoch {epoch:3d} | "
+            f"loss={train_metrics['loss']:.4f} "
+            f"k_mean={train_metrics['k_mean']:.1f} | "
+            f"val_loss={val_metrics['val_loss']:.4f}"
+        )
+
+        # 早停
+        val_loss = val_metrics["val_loss"]
+        if val_loss < best_val_loss:
+            best_val_loss = val_loss
+            patience_counter = 0
+            torch.save(
+                {
+                    "ldt_state_dict": ldt.state_dict(),
+                    "ldt_config": {
+                        "d_data": d_data,
+                        "d_latent": d_latent,
+                        "d_model": d_model,
+                        "n_heads": config.diffusion.num_heads,
+                        "n_layers": config.diffusion.num_layers,
+                        "history_len": lookback,
+                        "pred_len": horizon,
+                        "diffusion_steps": config.diffusion.diffusion_steps,
+                        "beta_1": config.diffusion.beta_1,
+                        "beta_T": config.diffusion.beta_T,
+                    },
+                    "epoch": epoch,
+                    "val_loss": val_loss,
+                },
+                os.path.join(ckpt_dir, "best_model.pt"),
+            )
+            print(f"  -> 已保存最佳检查点 (val_loss={val_loss:.4f})")
+        else:
+            patience_counter += 1
+            if patience_counter >= config.diffusion.early_stop_patience:
+                print(f"在第 {epoch} 轮早停")
+                break
+
+    print(f"第二阶段完成。最佳 val_loss: {best_val_loss:.4f}")
+    return ckpt_dir

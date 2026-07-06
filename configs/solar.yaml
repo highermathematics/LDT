@@ -1,0 +1,15 @@
+# Solar dataset configuration
+dataset:
+  name: solar
+  prediction_length: 24
+  lookback_window: 96
+  dimension: 137
+
+vae:
+  latent_dim: 32
+  embed_dim: 128
+
+diffusion:
+  diffusion_steps: 100
+  embed_dim: 128
+  guidance_strength: 3.0

@@ -1,0 +1,41 @@
+# LDT Default Configuration
+# Values here apply to all datasets unless overridden.
+
+dataset:
+  name: solar
+  prediction_length: 24
+  lookback_window: 96  # 4 × prediction_length
+
+vae:
+  latent_dim: 32       # m: approximately d/4 to d/8
+  embed_dim: 128
+  num_layers: 3
+  num_heads: 4
+  kl_weight: 1.0e-8
+  lr: 0.001
+  epochs: 100
+  early_stop_patience: 10
+
+diffusion:
+  diffusion_steps: 100   # K
+  beta_1: 0.0001
+  beta_T: 0.1
+  noise_schedule: sqrt   # sqrt or linear
+  embed_dim: 128         # d_model
+  num_layers: 3
+  num_heads: 8
+  p_uncond: 0.1
+  self_cond_prob: 0.4
+  guidance_strength: 3.0
+  lr: 0.001
+  epochs: 200
+  early_stop_patience: 15
+  ddim_steps: null       # null means same as diffusion_steps
+
+training:
+  batch_size: 64
+  num_workers: 4
+  seed: 42
+  device: cuda
+  checkpoint_dir: checkpoints
+  log_interval: 10

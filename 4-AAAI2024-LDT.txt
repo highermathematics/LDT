@@ -1,0 +1,767 @@
+The Thirty-Eighth AAAI Conference on Artificial Intelligence (AAAI-24)
+
+Latent Diffusion Transformer for Probabilistic Time Series Forecasting
+Shibo Feng1,2,3, Chunyan Miao1,2,3, Zhong Zhang4, Peilin Zhao4*
+1School of Computer Science and Engineering, Nanyang Technological University (NTU), Singapore 2Joint NTU-UBC Research Centre of Excellence in Active Living for the Elderly (LILY), NTU, Singapore
+3Webank-NTU Joint Research Institute on Fintech, NTU, Singapore 4Tencent AI Lab, Shenzhen, China
+{shibo001, ascymiao}@ntu.edu.sg, {todzhang, masonzhao}@tencent.com
+
+Abstract
+The probability prediction of multivariate time series is a notoriously challenging but practical task. This research proposes to condense high-dimensional multivariate time series forecasting into a problem of latent space time series generation, to improve the expressiveness of each timestamp and make forecasting more manageable. To solve the problem that the existing work is hard to extend to highdimensional multivariate time series, we present a latent multivariate time series diffusion framework called Latent Diffusion Transformer (LDT), which consists of a symmetric statistics-aware autoencoder and a diffusion-based conditional generator, to implement this idea. Through careful design, the time series autoencoder can compress multivariate timestamp patterns into a concise latent representation by considering dynamic statistics. Then, the diffusion-based conditional generator is able to efficiently generate realistic multivariate timestamp values on a continuous latent space under a novel self-conditioning guidance which is modeled in a non-autoregressive way. Extensive experiments demonstrate that our model achieves state-of-the-art performance on many popular high-dimensional multivariate time series datasets.
+Introduction
+Forecasting time series data is crucial across various sectors, including finance (Sezer, Gudelek, and Ozbayoglu 2020), energy (Cao et al. 2020), traffic (Liu et al. 2016; Feng et al. 2023) and human identification (Rao and Miao 2022; Rao et al. 2021). Multivariate forecasting, prevalent in practical applications, is more important and popular in industrial fields. For example, power companies analyze billions of data points from numerous clients to monitor electricity consumption, reflecting the complexity and significance of this task.
+Latent diffusion models (Rombach et al. 2022), a simple and efficient way to significantly improve both the training and sampling efficiency of denoising diffusion models (Ho, Jain, and Abbeel 2020) without degrading their quality. This particular class of latent generative models has gained significant recognition and accomplishments in recent times,
+*Corresponding author Copyright © 2024, Association for the Advancement of Artificial Intelligence (www.aaai.org). All rights reserved.
+
+particularly in processing high-dimensional types of data such as high-resolution images (Ho, Jain, and Abbeel 2020; Takagi and Nishimoto 2023), natural languages (Li et al. 2022a; Yuan et al. 2022), and audios (Huang et al. 2022; Ruan et al. 2023).
+Multivariate time series forecasting seeks to predict future trends accurately but faces challenges due to its complexity and computational demands. The common approach of using deep, auto-regressive (Woo et al. 2022; Liu et al. 2022; Wu et al. 2020) models to predict future timestamps is hindered by the high dimensionality of the data and the model's structure. This leads to two main issues: significant computational resource requirements, limiting scalability, and the accumulation of errors in forecasts, particularly in highdimensional series. Therefore, there's a pressing need for an innovative forecasting framework that can efficiently and effectively predict future trends with reduced computational load and increased speed.
+Latent-space generation, an efficient alternative in time series forecasting, employs a pre-trained autoencoder to mitigate data redundancy, transferring generation from the time to a latent domain. The primary challenge is the distribution shift problem, as statistical properties like mean and variance vary over time (Fan et al. 2023; Kim et al. 2021). Traditional models struggle with numerical inaccuracies when using historical timestamps as the inputs of the autoencoder. Our novel approach dynamically updates statistical parameters in pre-training, ensuring high-quality, accurate latent representations for each timestamp.
+Existing multivariate time-series diffusion models face two major issues. First, the autoregressive structure (Rasul et al. 2021) leads to poor long-range prediction, error accumulation, and slow inference. Second, most models excel in low-dimensional series (Tashiro et al. 2021; Alcaraz and Strodthoff 2022; Shen and Kwok 2023) but falter in high dimensions. To overcome these challenges, our approach emphasizes a non-autoregressive, resource-efficient denoising network for forecasting. We introduce a self-conditioningbased transformer denoising structure that effectively denoises time variables in a continuous latent space, incorporating covariant features akin to strategies in image generation (Chen, Zhang, and Hinton 2022; Yang et al. 2022; Ho and Salimans 2022). This Transformer diffusion module significantly reduces computational complexity, resource use,
+
+11979
+
+The Thirty-Eighth AAAI Conference on Artificial Intelligence (AAAI-24)
+
+and increases sampling speed compared to autoregressive models.
+In this work, we introduce a novel two-stage, nonautoregressive diffusion architecture for multivariate probabilistic forecasting. Our experiments across various realworld datasets demonstrate that this model has surpassed existing state-of-the-art generative models in high-dimensional multivariate time series forecasting. The key contributions of our work are:
+· Introduction of the LDT model, a new approach in multivariate time series forecasting, leveraging latent space representations for high-accuracy predictions in highdimensional scenarios.
+· Development of a practical LDT structure featuring a unique self-conditioning mechanism and a nonautoregressive transformer, enabling constrained selfconditioned predictions.
+· We perform extensive experiments with multiple multivariate forecasting datasets, demonstrating LDTs superior performance compared with the recent state-of-theart forecast methods, for multivariate time series probabilistic predictions.
+
+Background
+Diffusion Models (Ho, Jain, and Abbeel 2020) diffusion models are probability generative models proposed to generate the target data distribution p(x) by iterative denoising a normally distributed variable. Diffusion probabilistic models are composed of the fixed forward process and the learnable reverse process, which is a Markov Chain of length T . Forward Process It is a transition and fixed diffusion process, from the data distribution to a Gaussian distribution. Given a data sample x  Rd  p(x) and some latent variables {z0, z1, · · · , zT }, which interpolate between the data distribution and a Gaussian distribution with the diffusion steps increase. The forward process can be formally described as a Markov chain parameterized with a series of variances t and t := 1 - t.
+
+1
+
+q (z1:T |z0) = q (zt|zt-1) ,
+
+t=T
+
+(1)
+
+where q (zt|zt-1)  N 1 - tzt-1, tI ,
+
+Since the more steps of the diffusion process, the more noise
+
+added, q (zt|x) has a closed-form solution, which can be de-
+
+scribed by a general form.
+
+
+
+zt  q (zt|x) = N tx, (1 - t) I ,
+
+
+
+
+
+(2)
+
+zt = tx + 1 - t,   N (0, I),
+
+where t =
+
+t i=1
+
+(1
+
+-
+
+i)
+
+
+
+(0, 1), z0
+
+=
+
+x and
+
+zT  N (0, I) As the diffusion steps increases, the latent
+
+variable zt become noisier until the zT is approximately
+
+a Gaussian variable, which is independent of the starting
+
+point x.
+
+Reverse Process The learnable reverse process is de-
+
+fined by the inverted Markov chain p (z0:T ) =
+
+p (zT )
+
+T t=t
+
+p
+
+(zt-1|zt),
+
+where p (zT )
+
+=
+
+N (0, I)
+
+is known. The p (zt-1|zt) can be approximately
+
+driven from the following equation, q (zt-1 | zt, x) = N µt (zt, x) , t2I , where µt (zt, x) has a closed-form
+
+solution and t is a hyperparameter. To get the p (zt-1|zt),
+
+we train a denoising network  to approximate the x given
+
+noisy latent zt and the timestep t
+
+L = Exp(x),tU{1,··· ,T },zt x^ (zt, t) - x22 , (3)
+
+where zt  q(zt|x) and p (zt-1|zt) is an approximation of the q (zt-1 | zt, x^ (zt, t)), which enables us to sample from a closed-form and denoise the latent variable by sampling
+zt-1 until we get the z0 = x  p(x).
+
+zt-1  p (zt-1|zt) = q (zt-1 | zt, x^ (zt, t)) , (4)
+
+For sampling from the trained diffusion model, we utilize the inference distribution from Song et al. (2020) and therefore derive the sampling from q(zt-1 | zt, x) = N (µq (zt, x) , q(t)I),
+
+q (zt-1 | zt, x)  N zt-1; ¯t1zt + ¯t2x, ¯tI , (5)
+
+while
+
+setting
+
+ q (t)
+
+=
+
+0
+
+gives
+
+the
+
+deterministic
+
+
+DDIM
+
+sam-
+
+pler, ¯t1 =
+
+, t (1-¯ t-1 )
+1-¯t
+
+¯t2
+
+=
+
+¯ t-1 (1-t ) 1-¯t
+
+and ¯t
+
+=
+
+(1-t )(1-¯ t 1-¯t
+
+-1)
+
+.
+
+The
+
+detailed
+
+training
+
+and
+
+sampling
+
+proce-
+
+dures are shown in the Method section.
+
+Method
+Our approach to high-dimensional multivariate time series forecasting involves a two-stage process: a statisticsbased time autoencoder and a Latent Diffusion Transformer (LDT) generator. The autoencoder dynamically updates global statistics during training for accurate future timestamp reconstruction. The LDT generator then produces latent conditions using self-conditions and a guidance mechanism, incorporating relevant covariates. This method efficiently captures the inherent dynamics and correlations in the time series data, as LDT is shown in Fig. 1. The specific algorithm details are shown in Algorithms 1 and 2.
+
+Symmetric Time Series Compression
+In order to ensure the generality and effectiveness of our model to generative high-power latent embedding, we constructed a simple and accurate autoencoder structure. Statistical properties such as mean and variance often change over time in time series, previous work "RevIN (Kim et al. 2021), DIT-sh (Fan et al. 2023)" had claimed that the discrepancy between different input sequences can significantly degrade the model performance. We found that in non-stationary multivariate time series, different batch samples that were randomly sampled will have high variance deviation, which will degrade the stability and efficacy of autoencoder training. Therefore, we propose a simple yet effective symmetric autoencoder structure with adaptive variance updating normalization layer (VN).
+More precisely, given the look-back window data X  RT ×d and target Y  Rt×d in the time-space, the normalization layer VN normalizes the target Y to the Y^ =
+
+11980
+
+The Thirty-Eighth AAAI Conference on Artificial Intelligence (AAAI-24)
+
+Figure 1: The framework of our proposed LDT (a). During the training process, the stage-I VAE is first trained to construct
+time series latent with reconstruction task, while LDT is trained to generate the future targets conditioned by self-condition, covariates, and diffusion step z^m0 , t, c in the second stage. During the sampling process, the time series latent first be generated by LDT, and then input to decoder De to get the future targets. The black dashed lines stand for operations only involved in the training process. The details of the stage-II adaptive layernorm Transformer structure (Ed, Dd) are shown in (b) and the
+structures of stage-I are shown in Appendix.
+
+VN([X, Y ]). Then, the encoder E encodes Y^ into a latent representation Z = E(Y^ ), and the decoder D reconstructs the target time series from the latent, giving Y = D(Z) = D(E(Y^ )), where Z  Rt×m(m << d). Importantly, the encoder downsamples the time series by a factor f = d/m, and we use the factor f  2m, with m  N. The reason for choosing the size of f here is to reduce the training diffi-
+culty of the noise-added high-dimensional multivariate time
+series in the diffusion model. The framework overview of
+our autoencoder is demonstrated in Fig.1.
+
+As illustrated in the figure, we first use instance nor-
+
+malization (Ulyanov, Vedaldi, and Lempitsky 2016) to
+
+calculate the instance-specific mean and standard deviation for scaling every input W i = Xi, Y i  R×d
+
+and  = T + t, which are described as E W i =
+
+1 
+
+ j=1
+
+Wji,
+
+Var
+
+Wi
+
+=
+
+1 
+
+ j=1
+
+Wji - E
+
+Wi
+
+2 and
+
+E^ n+1
+
+Wi
+
+=
+
+1 n
+
+(En+1
+
+Wi
+
++ E^n
+
+Wi
+
+× (n - 1)), where
+
+n is the number of batches and the adaptive updated func-
+
+tion of variances V^arn+1 is the x same as E^n+1, we nor-
+
+malize the target Y i through these updated statistics as
+
+Y^ i = d
+
+Y i-E^n+1[W i]
+V^ n+1[W i]+
+
++ d, where d, d  Rd are
+
+the learnable affine parameters. We gradually update the in-
+
+stance variance and mean that were utilized for regulariza-
+
+tion. On the one hand, the non-stationary information in the
+
+target sequence can be weakened, making it easier to train
+
+the autoencoder. Also, the generative results from the au-
+
+toencoder make the diffusion model training in the second
+
+stage more stable and accurate.
+
+Specifically, our autoencoder structure is a symmetrical model, and the specific modules are shown in Appendix due to the limited space. Also, to avoid arbitrarily highvariance latent spaces, we follow the regularization strategy proposed in the "Latent diffusion Model" which imposed a
+
+KL-penalty (i.e. weight the KL term by a factor 10-8) towards a standard normal on the learned latent that preserves details of Y better and train all our autoencoder models in an adversarial manner, such that a timestamp-based discriminator D is optimized to differentiate original target time series from reconstructions D(E(Y^ )). The full objective training loss function L of our autoencoder reads:
+
+L = min max
+E,D 
+
+Lrec(Y, D(E(Y ))) - Ladv(D(E(Y )))
+
++ log D(Y ) + Lreg(Y ; E, D) ,
+
+where Lreg is a regularizing loss term which is to regularize the latent Z to be zero-centered and obtain a small variance. We found that different time series always have large variances, which may lead to the extremely unstable training of the following latent diffusion model. Detailed explanations are described in the experiment.
+Latent Diffusion Transformer
+Generative Modeling of Latent Representations Compared with applying the diffusion model directly in the time domain of high-dimensional multivariate time series, we introduce the trained time compression models consisting of E and D that take the efficient and low-dimensional time series representations to the following denoising network.
+Unlike previous work that relied on autoregressive generative models in the time-space (Min et al. 2022b; Yi et al. 2023), we take advantage of the attention-based transformer models (Min et al. 2022a; Xu et al. 2021) to establish a nonautoregressive denoising network structure that includes adaptive normalization layer (adaLN) (Park et al. 2019), transformer encoder-decoder block and self-condition guidance block. The details of our non-autoregressive denoising network can be found in Fig.1(b). The training objective
+
+11981
+
+The Thirty-Eighth AAAI Conference on Artificial Intelligence (AAAI-24)
+
+within our latent diffusion model now reads:
+LLDM := EE(x),xp(x),t E (x) - x^ (zt, c, t)22 , (6)
+where the denoising backbone x^ of our model is a selfguidance transformer structure and c is conditions like lookback window data and covariates. Since the forward process is fixed, zt can be efficiently obtained from trained E and we found that training x improves the generative performance compared to  as the denoising target. And finally the samples from p(x) can be directly decoded to the time-space with a trained decoder D.
+Self-Conditioning Guidance
+Firstly, conditional diffusion model can be simply described as x^ (zt, c, t). To train the latent diffusion model in a classifier-free guidance manner, we choose to train an unconditional denoising diffusion model p(z) parameterized through a score estimator x(zt, t) together with the conditional model x(zt, c, t). We use a single neural network to parameterize both models, for the unconditional model we only treat the look-back window conditions as the missing value when training the denoising network, i.e. x(zt, t) = x(zt, c = , t). We jointly train these two models simply by setting the look-back window data conditions as  with some probability pu which is set as a hyperparameter. When the conditional latent diffusion model is trained, we then perform sampling using a simple but effective linear combination score estimates,
+x^ (zt, c, t) = (1 + w)x(zt, c, t) - wx(zt, t), (7)
+where w is the guidance strength, and when w = 0, the equation becomes the standard conditional diffusion model. When w > 0, the updated gradient of the denoising network will be more offset to the first term and deviate from the latter. Specifically, if we have access to the exact predicted scores x (zt, c, t) and x (zt, t), then the gradient of this denoising network structure would be zt log p (c|zt) = -t [x (zt, c, t) - x (zt, t)].
+Moreover, we introduced a self-condition mechanism that can be seen as to direct condition on previously generated samples of its own during the iterative sampling process. Specifically, our conditional latent diffusion model x^ (zt, c, t) is replaced by the slightly different denoising network x^ (zt, z^0, c, t) where the z^0 is the previously estimated and updated iteratively. In our setting, we concatenate zt with previously estimated z^0 which is obtained from the earlier prediction of the denoising network in the sampling chain. During the training phase, with some probability (e.g., 60%), we set z^0 = 0 which falls back to modeling without Self-Conditioning. Apart from this, we first predict z^0 = x^ (zt, 0, c, t) and then use it for self-conditioning. Note that we do not backpropagate through the estimated z^0.
+Latent Diffusion Transformer Network
+The complete denoising network is shown in Figure 1(b). For the time series forecasting in a non-autoregressive way, we need to cover how to process time series inputs (lookback window data, target) and the architecture of x^.
+
+First, we describe how we process time series data as in-
+
+puts for the training of denoising networks. As defined in
+
+Section 4.1, E^t W i and V^ar W i come from the complete
+
+time series includes look-back window data and forecast-
+
+ing target. We first normalize the look-back window con-
+
+ditions X
+
+
+
+RT ×d using X^
+
+=
+
+Xti-E^[W i]
+V^ar[W i]+
+
+
+
+RT ×d
+
+and rescale the latent representation Z = E(Y ) using
+
+Z^
+
+
+
+Z ^
+
+=
+
+E (X ) ^
+
+where
+
+^2
+
+=
+
+1 btm
+
+b,t,m zb,t,m - µ^ 2,
+
+from the updated results from each training batch, where b
+
+is batch size, t is prediction length, m is hidden size and
+
+µ^
+
+=
+
+1 btm
+
+b,t,m Zb,t,m, to obtain the input of the denois-
+
+ing network Z^  Rt×m. We then obtain the embedding
+
+X^ emb  RT ×mof the X^ and Z^emb  Rt×m of the la-
+
+tent representation Z^ by an input projection block consisting
+
+of two multilayer perceptron layers. In our denoising net-
+
+work, we introduce time embedding of semb = [s1: ] to learn
+
+the temporal dependency which is obtained by single MLP
+
+layer and Position embedding pemb= [p1: ] that is defined
+
+in (Vaswani et al. 2017). Also, the diffusion-step embedding
+
+temb  Rn×1(n=4m) is encoded as a sinusoidal positional
+
+embedding to guide the adaptive layer norm in transformer-
+
+based residual layers, which replaces the standard layernorm
+
+and defined as
+
+i,c = fc (x) , i,c = hc (x) ,
+
+(8)
+
+where x indicates arbitrary vector inputs, i,c and i,c modulate a neural network's activations Yi,c, whose subscripts refer to the ith input's cth feature map, via a feature-wise
+affine transformation:
+
+adaLN (i,c, Yi,c, i,c) = i,cYi,c + i,c,
+
+(9)
+
+fc and hc can be arbitrary functions such as neural networks, and in our practice, it is easier to refer to fc and hc as a single function that outputs single vector (  Rm,   Rm). In our residual layers, we learn the dimension-wise scale and shift parameters i,c and i,c through the diffusion step embedding temb. Training The overall structure of our LDT denoising net-
+work is shown in Fig.1, and the training objective can refer
+to Eq.6 in the Method section. Besides, the specific training
+and inference procedure is shown in the Algorithm 1, 2. Inference For each time step t in the reverse process, a learned denoising distribution p parameterized by  generates samples zt-1 conditioned on the former noisier samples zt. After the reverse denoising process reaches T = 0, we round each timestamp of the generated z0 to its nearest value in the embedding space and obtain the final target by the trained decoder D:
+
+zt-1 = ^zt + ^x zt, t | X + t,
+
+(10)
+
+Y = D(z0),
+
+(11)
+
+
+
+
+
+where ^ =
+
+, t (1-¯ t-1 )
+1-¯t
+
+^
+
+=
+
+, ¯ t-1 (1-t )
+1-¯t
+
+t
+
+=
+
+(1-t )(1-¯ t-1 ) 1-¯t
+
+and
+
+
+
+
+
+N
+
+(0, 1).
+
+Note
+
+that
+
+in
+
+the
+
+whole
+
+dif-
+
+fusion process of training and sampling, we apply x rather
+
+than . In the experiment, we found that it is difficult to
+
+complete the multivariate time series forecasting with .
+
+11982
+
+The Thirty-Eighth AAAI Conference on Artificial Intelligence (AAAI-24)
+
+Algorithm 1: Training of LDT
+
+Input: Sample x01:T (History) and x0 (Target) from training set; Number of diffusion steps K; Encoder E in pretrained
+
+autoencoder. Output: Trained denoising function x. 1: Repeat;
+
+2: k  Uniform({1, 2, . . . , K});
+
+3:   N (0, I);
+
+4: 5:
+
+Generate Generate
+
+lnaoteisnetdelmatbeendtdzikng=z0b¯ykEz0(x+01:T,1x-0 );¯k
+
+;
+
+6: Obtain diffusion step k's embedding pemb using sinu-
+
+soidal positional embedding.; 7: x01:T   with probability puncond; 8: Initialize the self cond z^0= zeros like(zk); 9: if Uniform(0, I)>0.5 then 10: zp0red = x(zk, x01:T , z^0, k); 11: zp0red = Stop gradient(zp0red); 12: end if
+13: Use the denoising network to generate denoised sample z0 by x(zp0red, x01:T , zk, t);
+14: Obtainz0 by Eq.7, c=  if x10:T  ; 15: Calculate the loss Lk() by Eq.6;
+16: Take gradient descent step on Lk();
+17: Until Converged.
+
+Algorithm 2: Generating of LDT
+Input: Trained denoising network x, Decoder in pretrained autoencoder D and Sample x10:T (History), guidance strength w. Output: Generated corresponding future targets x^0 .
+1: zK  N (0, I); 2: z^0= zeros like(zK ); 3: x1:T = zeros like(x01:T ); 4: for k  K to 1 do
+5:   N (0, I), if k > 1, else  = 0; 6: Obtain diffusion step k's embedding pemb using sinu-
+soidal positional embedding.; 7: Obtain the self-cond z^0 = x(z k, x1:T , z^0, pemb); 8: Obtain the target z0 = x(zk, x01:T , z^0, pemb); 9: Obtain the guidance-based target z0 with x1:T by the
+Eq.7, 10: Estimate zk-1 by Eq.10.; 11: end for 12: Return x^0
+
+Quantitative Experiments
+Datasets We extensively evaluate the proposed LDT on five real-world benchmarks, covering the mainstream multivariate time series probabilistic forecasting applications, Energy: Solar (Lai et al. 2018) (137 dimensions) and Electricity (370 dimensions), Traffic (963 dimensions) and Taxi (1214 dimensions), Wikipedia (2000 dimensions). The properties of the datasets used in experiments can refer to the previous works (Rasul et al. 2021; Tashiro et al. 2021) and shown in Appendix C. Evaluation Metrics For probabilistic estimates, we re-
+
+port both the continuously ranked probability score across summed time series CRPS-sum ((Matheson and Winkler 1976; Jordan, Kru¨ger, and Lerch 2017)) and MSE (mean square error) error metrics, to measure the overall joint distribution pattern fit and fit of joint distribution central tendency, respectively. Due to limited space, the specific form of the metrics is shown in Appendix B. Baselines We include several baseline methods. For the classical settings and competitive multivariate time series baselines probabilistic models: Gaussian process model(GP) (Roberts et al. 2013), KVAE (Krishnan, Shalit, and Sontag 2017), Vec-LSTM-ind-scaling, GP-scaling, and GP-Copula (Salinas et al. 2019). For the time series diffusion models, including TimeGrad (Rasul et al. 2021), CSDI (Tashiro et al. 2021), SSSD (Alcaraz and Strodthoff 2022), D3VAE (Li et al. 2022b) as the competitive auto-regressive baselines. Moreover, for the non-autoregressive modeling and flow-based structures, we select TLAE (Nguyen and Quanz 2021) and HMGT (Ding et al. 2020), LSTM-Real-NVP and LSTM-MAF (Rasul et al. 2020) in our work. Implementation Details In our autoencoder structure of the first stage, both the encoder and the decoder utilized 3 Transformer encoder layers with 4 heads of the attention, and we use one layer Transformer encoder layer with 4 heads of the attention mechanism in the discriminator. The maximum look-back window data is 4 times the predicted target which is the same setting as in (Rasul et al. 2020), with embedding dimension m  [1/4, 1/8] data features, diffusion steps T = [50, 100, 200, 300], square-root noise schedule(Li et al. 2022a) and quad variance schedule 1 = 10 - 4 till T = 0.1. In our denoising network structure, we use a 3-layer transformer structure with 8 attention heads and embedding dim=[32, 64, 128, 256]. Our method is dependent upon the ADAM (Kingma and Ba 2014) optimizer with an initial learning rate of 1e-3, and the batch size is 64. All experiments are repeated more than five times, implemented in PyTorch (Paszke et al. 2019) and GluonTS (Alexandrov et al. 2020). The specific experimental hyperparameters corresponding to different datasets are shown in Appendix C.
+Main Results
+Real-World Datasets Results We compare the test time prediction of our LDT to the above baselines with CRPS, CRPS-sum, and MSE. The results for probabilistic forecasting in a multivariate setting are shown in Table 1. Compared with the other generative models, we observe that LDT achieves the state-of-the-art (to the best of our knowledge) CRPS-sum on almost all benchmarks. Notably, our model has shown a significant CRPS-sum reduction in Electricity 16%(0.025  0.021), in Traffic 14.8%(0.047  0.040), in Taxi 4%(0.130  0.125). Also, in terms of MSE metric, we obtain 22%(2.1e5  1.6e5), 8%(4.5e - 4  4.1e - 4) and 4%(2.2e  2.3e) of improvement in the above three datasets. Uncertainty Estimation The uncertainty can be assessed by estimating the noise of the outcome series when making the prediction. We found that our model showed obvious uncertainty estimation in two types of datasets. As shown in Fig-
+
+11983
+
+The Thirty-Eighth AAAI Conference on Artificial Intelligence (AAAI-24)
+
+SOLAR
+
+ELECTRICITY
+
+TRAFFIC
+
+TAXI
+
+WIKIPEDIA
+
+Method
+
+C-S
+
+MSE
+
+C-S
+
+MSE
+
+C-S
+
+MSE
+
+C-S
+
+MSE
+
+C-S
+
+MSE
+
+GP KVAE VLIS GP-scaling GP-Copula LSRP LSTM-MAF HMGT TLAE TimeGrad CSDI SSSD D3VAE LDT
+
+0.828(.010) 0.340(.025) 0.391(.017) 0.368(.012) 0.337(.024) 0.331(.020) 0.315(.032) 0.327(.013) 0.124(.014) 0.317(.020) 0.298(.004) 0.275(.004) 0.332(.002) 0.253(.002)
+
+9.3e2 1.1e3 9.8e2 9.1e2 9.8e2 9.4e2 8.3e2 9.9e2 9.4e2 5.4e2 9.2e2 7.7e2
+
+0.947(.016) 0.051(.019) 0.025(.001) 0.022(.000) 0.024(.001) 0.024(.001) 0.023(.000) 0.022(.003) 0.040(.001) 0.025(.001) 0.029(.002) 0.026(.001) 0.030(.000) 0.021(.001)
+
+2.1e5 1.8e5 2.4e5 2.5e5 1.8e5 2.1e5 2.7e5 2.1e5 2.4e5 2.3e5 2.4e5 1.6e5
+
+2.198(.774) 0.100(.005) 0.087(.041) 0.079(.000) 0.078(.002) 0.078(.001) 0.069(.002) 0.052(.002) 0.069(.005) 0.050(.006) 0.053(.009) 0.047(.002) 0.049(.001) 0.040(.000)
+
+6.3e-4 5.2e-4 6.9e-4 6.9e-4 4.9e-4 4.4e-4 5.0e-4 4.6e-4 4.4e-4 4.5e-4 4.5e-4 4.1e-4
+
+0.425(.199) -
+0.506(.005) 0.183(.395) 0.208(.183) 0.175(.001) 0.161(.002) 0.158(.042) 0.130(.010) 0.137(.013)
+0.133(.006) 0.130(.011) 0.125(.007)
+
+- 0.93(.003)
+
+-
+
+- 0.095(.012)
+
+-
+
+7.3e 0.133(.002) 7.2e7
+
+2.7e 1.483(1.034) 5.5e7
+
+3.1e 0.086(.004) 4.0e7
+
+2.6e 0.078(.001) 4.7e7
+
+2.4e 0.067(.002) 3.8e7
+
+2.4e 0.074(.011) 3.0e7
+
+2.6e 0.241(.012) 3.8e7
+
+2.4e 0.064(.003) 3.1e7
+
+-
+
+-
+
+-
+
+2.3e 0.065(.001) 2.99e7
+
+2.4e 0.069(.004) 3.2e7
+
+2.2e 0.061(.002) 2.92e7
+
+Table 1: The Test set CRPS-sum(C-S) and MSE comparison(lower is better) of models from the baselines and our model LDT, with - are runs failed with numerical issues, and (*) indicates the experimental variance. VLIS, LSRP are the abbreviations for the Vec-LSTMind-scaling and LSTM- Real-NVP respectively. - in CSDI is out of memory.
+
+SOLAR
+
+ELECTRICITY
+
+TRAFFIC
+
+TAXI
+
+WIKIPEDIA
+
+Strategy
+
+C-S
+
+MSE
+
+C-S
+
+MSE
+
+C-S
+
+MSE
+
+C-S
+
+MSE
+
+C-S
+
+MSE
+
+
+
+0.528(.006) 1.4e3 0.044(.007) 3.0e5 0.074(.012) 6.4e-4 0.218(.012) 3.2e 0.079(.010) 4.1e7
+
+x
+
+0.253(.002) 7.7e2 0.021(.001) 1.6e5 0.040(.000) 4.1e-4 0.125(.007) 2.2e 0.061(.002) 2.92e7
+
+Table 2: The Test set CRPS-sum(C-S) and MSE comparison(lower is better) of models from  strategy and x denoising strategy.
+
+H
+TimeGrad SSSD CSDI D3VAE LDT
+
+Solar
+
+24
+
+48
+
+104.51(.73) 203.16(.90) 80.36(.28) 132.39(.71) 92.23(.53) 147.52(.17)
+
+87.53(.29) 153.43(.11) 13.72(.25) 14.03(.37)
+
+Electricity
+
+24
+
+48
+
+302.61(.35) 615.02(.06) 176.23(.82) 295.75(.54) 203.52(.74) 314.23(.76)
+
+198.61(.19) 304.76(.82) 22.13(.14) 25.29(.18)
+
+Table 3: multivariate datasets Solar and Electricity with two different forecasting lengths H=(24, 48).
+
+Solar
+
+Electricity
+
+Traffic
+
+Method C-S MSE C-S MSE C-S MSE
+
+LDT-g 0.301(.001) 8.9e2 0.024(.000) 2.1e5 0.050(.003) 4.3e-4 LDT-c 0.264(.004) 8.0e2 0.023(.003) 1.8e5 0.047(.004) 4.5e-4 LDT 0.253(.002) 7.7e2 0.021(.001) 1.6e5 0.040(.000) 4.1e-4
+
+Table 4: The Test set CRPS-sum(C-S) and MSE comparison (lower is better) of models in Ablation studies and our model LDT.
+
+ure 2, for the Solar dataset, although the data had a strong periodicity, there were great differences in both the numerical amplitude periodicity change and the length of periodicity in the dataset that will cause two similar look-back window data to result in two different forecasting targets. Also, in the Taxi dataset which is with high stochasticity, we found that the estimated uncertainty grows rapidly when extreme values are encountered in our model.
+Deterministic Estimation In addition to the aforementioned uncertainty estimation approach, our work has revealed that our model exhibits deterministic estimation outcomes when applied to datasets with limited extreme variations, such as Electricity and Traffic. Our one-shot LDT can predict relatively stationary high-dimensional time series more accurately, as shown in Fig. 3. We find that the change of guidance strength in our model will affect the performance of deterministic prediction, which is also shown in Appendix D. We observed that in datasets with deterministic predictions like Electricity and Traffic, a larger guidance w will yield better results, whereas lower guidance w is better in Solar and Taxi. This shows that our model can adapt to different forecasting scenarios by adjusting guid-
+
+11984
+
+The Thirty-Eighth AAAI Conference on Artificial Intelligence (AAAI-24)
+
+Figure 2: Undeterministic estimation of the prediction of the 8 samples in the Solar and Taxi datasets.
+
+Self-Conditioning Guidance Mechanism In this experiment, we study the effectiveness of the self-conditioning guidance mechanism which is described in section 4.3. We consider the three different settings to verify the effectiveness of our module where LDT-g is without the selfcondition to train the denoising network, LDT-c is without the guidance and LDT is proposed in our work. Table 4 shows the results of the two metrics MSE and CRPS-sum with the same guidance strength w =3.0. To verify the role of different parts, we visualized the results of a more complex sample generation in the Electricity dataset. As seen in Figure 4, LDT-g can capture the detailed change pattern of the forecasting targets, but there is a deviation in the accuracy of the numerical value. LDT-c can effectively learn to forecast the interval of the numerical change of the future targets, but the details are not fine enough. And our proposed LDT effectively combines the advantages of these two factors. The guidance factor learns the detailed patterns of the forecasting targets, and the self-condition factor learns to predict the numerical values of the predicted targets.
+
+Figure 3: Deterministic estimation of the prediction in the Electricity and Traffic datasets.
+
+Predicting x vs. Predicting  In this experiment, we will discuss the different denoising strategies in our work. We compared two different training strategies on five datasets and Table 2 shows our comparative results. We found that the denoising process shows exactly poor performance in  strategy, but we found that the autoregressive diffusion-based method like TimeGrad can use  as the denoising target. We believe that there are two reasons for this result, (1) In the non-autoregressive condition, the target is set to noise, which makes the model ignore the correlation between timestamps. (2) The time series usually contains highly nonlinear noise, which can be easily confused with the noise generated from the diffusion process.
+
+Inference Efficiency In this experiment, we compare the inference efficiency of the proposed LDT with the other time series diffusion model baselines TimeGrad, SSSD, CSDI and D3VAE. Table 3 shows the inference time on the multivariate datasets Solar and Electricity with two different forecasting lengths (24, 48). In terms of generation efficiency, our one-shot latent structure LDT performs well.
+
+Figure 4: Visualizations on Electricity and Traffic by LDT-g, LDT-c, and the proposed LDT.
+ance strength to achieve deterministic and uncertainty predictions for different types of datasets.
+Ablation Studies In this section, we study the effectiveness of the proposed components in our structure. Three representative multivariate datasets are introduced in Table.1: Solar, Electricity, and Traffic, which are non-stationary and high dimensional.
+
+Conclusions
+In this study, we introduce a multivariate probabilistic time series forecasting approach that leverages latent space representations. Our method incorporates a self-conditioning guidance mechanism, which combines self-condition bias with condition-based guidance to enhance the denoising process in our latent diffusion model. Furthermore, we develop a one-shot, non-autoregressive Latent Diffusion Transformer (LDT) for high-dimensional multivariate time series prediction. Evaluation of our LDT model on five standard time-series benchmarks sets a new benchmark, outperforming existing generative methods. Ablation studies validate the contribution of each component within our model. We aim to refine denoising structures further for modeling high-dimensional multivariate time series.
+
+11985
+
+The Thirty-Eighth AAAI Conference on Artificial Intelligence (AAAI-24)
+
+Acknowledgements
+This research was supported, in part, by the National Research Foundation, Prime Minister's Office, Singapore under its AI Singapore Programme (AISG Award No: AISGGC-2019-003) and under its NRF Investigatorship Programme (NRFI Award No. NRF-NRFI05-2019-0002). Any opinions, findings conclusions, or recommendations expressed in this material are those of the authors and do not reflect the views of the National Research Foundation, Singapore. Moreover, the authors greatly appreciate the reviewers' suggestions and the editor's encouragement.
+References
+Alcaraz, J. M. L.; and Strodthoff, N. 2022. Diffusion-based time series imputation and forecasting with structured state space models. arXiv preprint arXiv:2208.09399.
+Alexandrov, A.; Benidis, K.; Bohlke-Schneider, M.; Flunkert, V.; Gasthaus, J.; Januschowski, T.; Maddix, D. C.; Rangapuram, S.; Salinas, D.; Schulz, J.; et al. 2020. Gluonts: Probabilistic and neural time series modeling in python. The Journal of Machine Learning Research, 21(1): 4629­4634.
+Cao, D.; Wang, Y.; Duan, J.; Zhang, C.; Zhu, X.; Huang, C.; Tong, Y.; Xu, B.; Bai, J.; Tong, J.; et al. 2020. Spectral temporal graph neural network for multivariate time-series forecasting. Advances in neural information processing systems, 33: 17766­17778.
+Chen, T.; Zhang, R.; and Hinton, G. 2022. Analog bits: Generating discrete data using diffusion models with selfconditioning. arXiv preprint arXiv:2208.04202.
+Ding, Q.; Wu, S.; Sun, H.; Guo, J.; and Guo, J. 2020. Hierarchical Multi-Scale Gaussian Transformer for Stock Movement Prediction. In IJCAI, 4640­4646.
+Fan, W.; Wang, P.; Wang, D.; Wang, D.; Zhou, Y.; and Fu, Y. 2023. Dish-TS: A General Paradigm for Alleviating Distribution Shift in Time Series Forecasting. In Proceedings of the AAAI Conference on Artificial Intelligence, volume 37, 7522­7529.
+Feng, S.; Miao, C.; Xu, K.; Wu, J.; Wu, P.; Zhang, Y.; and Zhao, P. 2023. Multi-scale attention flow for probabilistic time series forecasting. IEEE Transactions on Knowledge and Data Engineering.
+Ho, J.; Jain, A.; and Abbeel, P. 2020. Denoising diffusion probabilistic models. Advances in neural information processing systems, 33: 6840­6851.
+Ho, J.; and Salimans, T. 2022. Classifier-free diffusion guidance. arXiv preprint arXiv:2207.12598.
+Huang, R.; Lam, M. W.; Wang, J.; Su, D.; Yu, D.; Ren, Y.; and Zhao, Z. 2022. Fastdiff: A fast conditional diffusion model for high-quality speech synthesis. arXiv preprint arXiv:2204.09934.
+Jordan, A.; Kru¨ger, F.; and Lerch, S. 2017. Evaluating probabilistic forecasts with scoringRules. arXiv preprint arXiv:1709.04743.
+Kim, T.; Kim, J.; Tae, Y.; Park, C.; Choi, J.-H.; and Choo, J. 2021. Reversible instance normalization for accurate timeseries forecasting against distribution shift. In International Conference on Learning Representations.
+
+Kingma, D. P.; and Ba, J. 2014. Adam: A method for stochastic optimization. arXiv preprint arXiv:1412.6980.
+Krishnan, R.; Shalit, U.; and Sontag, D. 2017. Structured inference networks for nonlinear state space models. In Proceedings of the AAAI Conference on Artificial Intelligence, volume 31.
+Lai, G.; Chang, W.-C.; Yang, Y.; and Liu, H. 2018. Modeling long-and short-term temporal patterns with deep neural networks. In The 41st international ACM SIGIR conference on research & development in information retrieval, 95­104.
+Li, X.; Thickstun, J.; Gulrajani, I.; Liang, P. S.; and Hashimoto, T. B. 2022a. Diffusion-lm improves controllable text generation. Advances in Neural Information Processing Systems, 35: 4328­4343.
+Li, Y.; Lu, X.; Wang, Y.; and Dou, D. 2022b. Generative time series forecasting with diffusion, denoise, and disentanglement. Advances in Neural Information Processing Systems, 35: 23009­23022.
+Liu, C.; Hoi, S. C.; Zhao, P.; and Sun, J. 2016. Online arima algorithms for time series prediction. In Proceedings of the AAAI conference on artificial intelligence, volume 30.
+Liu, Y.; Wu, H.; Wang, J.; and Long, M. 2022. Nonstationary transformers: Exploring the stationarity in time series forecasting. Advances in Neural Information Processing Systems, 35: 9881­9893.
+Matheson, J. E.; and Winkler, R. L. 1976. Scoring rules for continuous probability distributions. Management science, 22(10): 1087­1096.
+Min, E.; Chen, R.; Bian, Y.; Xu, T.; Zhao, K.; Huang, W.; Zhao, P.; Huang, J.; Ananiadou, S.; and Rong, Y. 2022a. Transformer for graphs: An overview from architecture perspective. arXiv preprint arXiv:2202.08455.
+Min, E.; Rong, Y.; Xu, T.; Bian, Y.; Luo, D.; Lin, K.; Huang, J.; Ananiadou, S.; and Zhao, P. 2022b. Neighbour interaction based click-through rate prediction via graph-masked transformer. In Proceedings of the 45th International ACM SIGIR Conference on Research and Development in Information Retrieval, 353­362.
+Nguyen, N.; and Quanz, B. 2021. Temporal latent autoencoder: A method for probabilistic multivariate time series forecasting. In Proceedings of the AAAI Conference on Artificial Intelligence, volume 35, 9117­9125.
+Park, T.; Liu, M.-Y.; Wang, T.-C.; and Zhu, J.-Y. 2019. Semantic image synthesis with spatially-adaptive normalization. In Proceedings of the IEEE/CVF conference on computer vision and pattern recognition, 2337­2346.
+Paszke, A.; Gross, S.; Massa, F.; Lerer, A.; Bradbury, J.; Chanan, G.; Killeen, T.; Lin, Z.; Gimelshein, N.; Antiga, L.; et al. 2019. Pytorch: An imperative style, high-performance deep learning library. Advances in neural information processing systems, 32.
+Rao, H.; Hu, X.; Cheng, J.; and Hu, B. 2021. SM-SGE: A self-supervised multi-scale skeleton graph encoding framework for person re-identification. In Proceedings of the 29th ACM international conference on Multimedia, 1812­1820.
+
+11986
+
+The Thirty-Eighth AAAI Conference on Artificial Intelligence (AAAI-24)
+
+Rao, H.; and Miao, C. 2022. SimMC: Simple masked contrastive learning of skeleton representations for unsupervised person re-identification. arXiv preprint arXiv:2204.09826.
+Rasul, K.; Seward, C.; Schuster, I.; and Vollgraf, R. 2021. Autoregressive denoising diffusion models for multivariate probabilistic time series forecasting. In International Conference on Machine Learning, 8857­8868. PMLR.
+Rasul, K.; Sheikh, A.-S.; Schuster, I.; Bergmann, U.; and Vollgraf, R. 2020. Multivariate probabilistic time series forecasting via conditioned normalizing flows. arXiv preprint arXiv:2002.06103.
+Roberts, S.; Osborne, M.; Ebden, M.; Reece, S.; Gibson, N.; and Aigrain, S. 2013. Gaussian processes for time-series modelling. Philosophical Transactions of the Royal Society A: Mathematical, Physical and Engineering Sciences, 371(1984): 20110550.
+Rombach, R.; Blattmann, A.; Lorenz, D.; Esser, P.; and Ommer, B. 2022. High-resolution image synthesis with latent diffusion models. In Proceedings of the IEEE/CVF conference on computer vision and pattern recognition, 10684­ 10695.
+Ruan, L.; Ma, Y.; Yang, H.; He, H.; Liu, B.; Fu, J.; Yuan, N. J.; Jin, Q.; and Guo, B. 2023. Mm-diffusion: Learning multi-modal diffusion models for joint audio and video generation. In Proceedings of the IEEE/CVF Conference on Computer Vision and Pattern Recognition, 10219­10228.
+Salinas, D.; Bohlke-Schneider, M.; Callot, L.; Medico, R.; and Gasthaus, J. 2019. High-dimensional multivariate forecasting with low-rank gaussian copula processes. Advances in neural information processing systems, 32.
+Sezer, O. B.; Gudelek, M. U.; and Ozbayoglu, A. M. 2020. Financial time series forecasting with deep learning: A systematic literature review: 2005­2019. Applied soft computing, 90: 106181.
+Shen, L.; and Kwok, J. 2023. Non-autoregressive Conditional Diffusion Models for Time Series Prediction. arXiv preprint arXiv:2306.05043.
+Takagi, Y.; and Nishimoto, S. 2023. High-resolution image reconstruction with latent diffusion models from human brain activity. In Proceedings of the IEEE/CVF Conference on Computer Vision and Pattern Recognition, 14453­14463.
+Tashiro, Y.; Song, J.; Song, Y.; and Ermon, S. 2021. Csdi: Conditional score-based diffusion models for probabilistic time series imputation. Advances in Neural Information Processing Systems, 34: 24804­24816.
+Ulyanov, D.; Vedaldi, A.; and Lempitsky, V. 2016. Instance normalization: The missing ingredient for fast stylization. arXiv preprint arXiv:1607.08022.
+Vaswani, A.; Shazeer, N.; Parmar, N.; Uszkoreit, J.; Jones, L.; Gomez, A. N.; Kaiser, L.; and Polosukhin, I. 2017. Attention is all you need. Advances in neural information processing systems, 30.
+Woo, G.; Liu, C.; Sahoo, D.; Kumar, A.; and Hoi, S. 2022. Etsformer: Exponential smoothing transformers for timeseries forecasting. arXiv preprint arXiv:2202.01381.
+
+Wu, S.; Xiao, X.; Ding, Q.; Zhao, P.; Wei, Y.; and Huang, J. 2020. Adversarial sparse transformer for time series forecasting. Advances in neural information processing systems, 33: 17105­17115.
+Xu, K.; Zhang, Y.; Ye, D.; Zhao, P.; and Tan, M. 2021. Relation-aware transformer for portfolio policy learning. In Proceedings of the twenty-ninth international conference on international joint conferences on artificial intelligence, 4647­4653.
+Yang, L.; Zhang, Z.; Song, Y.; Hong, S.; Xu, R.; Zhao, Y.; Shao, Y.; Zhang, W.; Cui, B.; and Yang, M.-H. 2022. Diffusion models: A comprehensive survey of methods and applications. arXiv preprint arXiv:2209.00796.
+Yi, Y.; Wan, X.; Bian, Y.; Ou-Yang, L.; and Zhao, P. 2023. ETDock: A Novel Equivariant Transformer for ProteinLigand Docking. arXiv preprint arXiv:2310.08061.
+Yuan, H.; Yuan, Z.; Tan, C.; Huang, F.; and Huang, S. 2022. Seqdiffuseq: Text diffusion with encoder-decoder transformers. arXiv preprint arXiv:2212.10325.
+
+11987
+
+
