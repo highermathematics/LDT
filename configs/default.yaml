@@ -4,33 +4,34 @@
 dataset:
   name: solar
   prediction_length: 24
-  lookback_window: 96  # 4 × prediction_length
+  lookback_window: 96  # 4 x prediction_length
 
 vae:
-  latent_dim: 32       # m: approximately d/4 to d/8
+  latent_dim: 32       # m: d/4 to d/8
   embed_dim: 128
   num_layers: 3
   num_heads: 4
-  kl_weight: 1.0e-8
+  kl_weight: 1.0e-8    # 论文: 1e-8
   lr: 0.001
+  disc_lr_mult: 0.1    # 判别器 LR = lr × 0.1（防止判别器过快收敛）
   epochs: 100
   early_stop_patience: 10
 
 diffusion:
-  diffusion_steps: 100   # K
+  diffusion_steps: 100   # K in [50, 100, 200, 300]
   beta_1: 0.0001
   beta_T: 0.1
   noise_schedule: sqrt   # sqrt or linear
-  embed_dim: 128         # d_model
+  embed_dim: 128         # d_model in [32, 64, 128, 256]
   num_layers: 3
   num_heads: 8
   p_uncond: 0.1
   self_cond_prob: 0.4
   guidance_strength: 3.0
-  lr: 0.001
-  epochs: 200
-  early_stop_patience: 15
-  ddim_steps: null       # null means same as diffusion_steps
+  lr: 0.0003              # DiT 架构用更低 LR 避免震荡
+  epochs: 300
+  early_stop_patience: 20
+  ddim_steps: 25
 
 training:
   batch_size: 64

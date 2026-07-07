@@ -1,10 +1,8 @@
 """概率时间序列预测的评估指标。
 
-实现 LDT 论文（AAAI 2024）中使用的 CRPS-sum（连续排序概率分数，
-在时间步上求和）和 MSE。
+实现 LDT 论文（AAAI 2024）中使用的 CRPS-sum 和 MSE。
+与 TimeGrad/CSDI 保持一致的计算方式：按维度归一化后取平均。
 """
-
-from typing import Optional
 
 import torch
 
@@ -12,91 +10,84 @@ import torch
 def crps_empirical(
     samples: torch.Tensor, target: torch.Tensor
 ) -> torch.Tensor:
-    """计算单个时间步和维度的经验 CRPS。
+    """计算经验 CRPS，基于样本估计量。
 
-    CRPS(F, y) = ∫ (F(z) - 1{z ≥ y})² dz
-
-    使用基于样本的估计量：
         CRPS = (1/N) Σ|x_i - y| - (1/(2N²)) Σ|x_i - x_j|
 
     Args:
-        samples: 预测样本 [N, B, t, d]（N 个采样）。
+        samples: 预测样本 [N, B, t, d]。
         target: 真实值 [B, t, d]。
 
     Returns:
-        每个 (batch, timestep, dimension) 的 CRPS [B, t, d]。
+        每个 (batch, timestep, dim) 的 CRPS [B, t, d]。
     """
     N = samples.shape[0]
-
-    # 平均绝对误差项: (1/N) Σ|x_i - y|
     mae = torch.abs(samples - target.unsqueeze(0)).mean(dim=0)  # [B, t, d]
-
-    # 成对绝对差项: (1/(2N²)) Σ|x_i - x_j|
-    # 使用向量化成对展开高效计算
     if N > 1:
-        samples_expanded = samples.unsqueeze(1)    # [N, 1, B, t, d]
-        samples_expanded_2 = samples.unsqueeze(0)  # [1, N, B, t, d]
-        pairwise_diff = torch.abs(samples_expanded - samples_expanded_2)  # [N, N, B, t, d]
-        pairwise_mean = pairwise_diff.sum(dim=(0, 1)) / (2 * N * N)       # [B, t, d]
+        s1 = samples.unsqueeze(1)   # [N, 1, B, t, d]
+        s2 = samples.unsqueeze(0)   # [1, N, B, t, d]
+        pairwise_mean = (s1 - s2).abs().sum(dim=(0, 1)) / (2 * N * N)
     else:
         pairwise_mean = torch.zeros_like(mae)
-
-    crps = mae - pairwise_mean  # [B, t, d]
-    return crps
+    return mae - pairwise_mean  # [B, t, d]
 
 
 def crps_sum(
     samples: torch.Tensor, target: torch.Tensor
 ) -> torch.Tensor:
-    """计算在所有时间步上求和的 CRPS-sum（沿时间维求和）。
+    """计算归一化 CRPS-sum，与 TimeGrad/LDT 论文一致。
 
-    CRPS-sum = Σ_t CRPS(F_t, y_t)
-
-    与 LDT 论文表 1 中使用的指标相同。
+    计算方式：
+        1. 逐维计算 CRPS ∊ R^{B×t×d}
+        2. 沿时间求和 → [B, d]
+        3. 逐维除以 Σ_t |target| 做归一化 → [B, d]
+        4. 对维度取平均 → [B]
 
     Args:
-        samples: 预测样本 [N, B, t, d]。
-        target: 真实值 [B, t, d]。
+        samples: [N, B, t, d]
+        target:  [B, t, d]
 
     Returns:
-        每个批次项的 CRPS-sum [B]。
+        归一化 CRPS-sum [B]。
     """
-    crps = crps_empirical(samples, target)  # [B, t, d]
-    return crps.sum(dim=(1, 2))  # [B] — 沿时间和维度求和
+    crps = crps_empirical(samples, target)                    # [B, t, d]
+    crps_t = crps.sum(dim=1)                                   # [B, d] — 沿时间求和
+    target_abs_sum = target.abs().sum(dim=1).clamp(min=1e-8)  # [B, d] — 归一化因子
+    crps_norm = crps_t / target_abs_sum                        # [B, d] — 逐维归一化
+    return crps_norm.mean(dim=1)                                # [B] — 维度取平均
 
 
 def mse_median(
     samples: torch.Tensor, target: torch.Tensor
 ) -> torch.Tensor:
-    """使用中位数预测作为确定性预报计算 MSE。
+    """使用中位数预测计算 MSE。
 
     Args:
-        samples: 预测样本 [N, B, t, d]。
-        target: 真实值 [B, t, d]。
+        samples: [N, B, t, d]
+        target:  [B, t, d]
 
     Returns:
-        每个批次项的 MSE [B]。
+        每个批次项的 MSE [B]（所有时间和维度取均值）。
     """
     median_pred = samples.median(dim=0).values  # [B, t, d]
     se = (median_pred - target) ** 2            # [B, t, d]
-    return se.mean(dim=(1, 2))                   # [B] — 沿时间和维度取均值
+    return se.mean(dim=(1, 2))                   # [B]
 
 
 def compute_all_metrics(
     samples: torch.Tensor, target: torch.Tensor
 ) -> dict:
-    """同时计算 CRPS-sum 和 MSE 指标。
+    """计算 CRPS-sum 和 MSE。
 
     Args:
-        samples: 预测样本 [N, B, t, d]。
-        target: 真实值 [B, t, d]。
+        samples: [N, B, t, d]
+        target:  [B, t, d]
 
     Returns:
-        包含 'crps_sum'（均值±标准差）和 'mse'（均值±标准差）的字典。
+        {'crps_sum_mean', 'crps_sum_std', 'mse_mean', 'mse_std'}
     """
     cs = crps_sum(samples, target)
     mse = mse_median(samples, target)
-
     return {
         "crps_sum_mean": cs.mean().item(),
         "crps_sum_std": cs.std().item(),

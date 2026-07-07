@@ -74,7 +74,7 @@ class SqrtNoiseSchedule:
             α̅_k 值 [B]。
         """
         k_idx = (k - 1).long().clamp(0, self.K - 1)
-        return self.alpha_cumprod[k_idx].to(k.device)
+        return self.alpha_cumprod.to(k.device)[k_idx]
 
     def q_sample(
         self, z_0: torch.Tensor, k: torch.Tensor, noise: torch.Tensor
@@ -97,39 +97,46 @@ class SqrtNoiseSchedule:
     def get_ddim_coeffs(
         self, k: torch.Tensor
     ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-        """计算步 k 的 DDIM 系数。
+        """计算步 k 的 DDPM 反向后验系数（用于加速采样）。
 
-        返回 (μ̂_t, μ̂_x, σ_t) 使得:
-        z_{k-1} = μ̂_t · z_k + μ̂_x · x̂_0 + σ_t · ε
+        使用 DDPM 反向后验均值公式（x₀ 预测）:
+            z_{k-1} = c₁ · z_k + c₂ · x̂₀ + σ_k · ε
+
+        其中:
+            c₁ = √α_k · (1 - α̅_{k-1}) / (1 - α̅_k)
+            c₂ = √α̅_{k-1} · (1 - α_k) / (1 - α̅_k)
+            σ_k² = (1 - α̅_{k-1}) / (1 - α̅_k) · (1 - α_k)
+
+        确定性采样时 σ_k = 0（类似 DDIM）。
 
         Args:
             k: 当前步 [B]（1 起始）。
 
         Returns:
-            (mu_t [B], mu_x [B], sigma [B]) 元组，均可广播。
+            (c1 [B], c2 [B], sigma [B]) 元组，均可广播。
         """
         alpha_bar = self.get_alpha_bar(k)  # α̅_k
         # α̅_{k-1}: k=1 时 α̅_0 = 1.0
         prev_k = (k - 1).long()
         alpha_bar_prev = torch.where(
             prev_k >= 1,
-            self.alpha_cumprod[(prev_k - 1).clamp(0, self.K - 1)].to(k.device),
+            self.alpha_cumprod.to(k.device)[(prev_k - 1).clamp(0, self.K - 1)],
             torch.ones_like(alpha_bar),
         )
 
-        # DDIM 系数（确定性, σ=0）
-        sqrt_alpha_bar = torch.sqrt(alpha_bar)
-        sqrt_alpha_bar_prev = torch.sqrt(alpha_bar_prev)
+        # α_k = α̅_k / α̅_{k-1}（k=1 时 α̅_0=1, 所以 α_1 = α̅_1）
+        alpha = alpha_bar / alpha_bar_prev.clamp(min=1e-8)
 
-        # z_k 的系数
-        mu_t = sqrt_alpha_bar_prev / sqrt_alpha_bar * torch.sqrt(1.0 - alpha_bar)
-        # x̂_0 的系数
-        mu_x = sqrt_alpha_bar_prev
+        # DDPM 反向后验系数
+        # c₁ = √α_k · (1 - α̅_{k-1}) / (1 - α̅_k)
+        c1 = torch.sqrt(alpha) * (1.0 - alpha_bar_prev) / (1.0 - alpha_bar).clamp(min=1e-8)
+        # c₂ = √α̅_{k-1} · (1 - α_k) / (1 - α̅_k)
+        c2 = torch.sqrt(alpha_bar_prev) * (1.0 - alpha) / (1.0 - alpha_bar).clamp(min=1e-8)
 
-        # 确定性 DDIM: σ = 0
+        # 确定性采样: σ = 0（类似 DDIM）
         sigma = torch.zeros_like(alpha_bar)
 
-        return mu_t, mu_x, sigma
+        return c1, c2, sigma
 
 
 # ---------------------------------------------------------------------------
@@ -250,22 +257,25 @@ class LDiffusion(nn.Module):
         B, t, m = z_0.shape
         device = z_0.device
 
+        # 按论文: 缩放潜在变量 Ẑ = Z / σ̂
+        z_0_scaled, sigma_hat = self._scale_latent(z_0)
+
         # 1. 采样扩散步 k ~ Uniform(1..K)
         k = torch.randint(1, self.diffusion_steps + 1, (B,), device=device)
 
         # 2. 采样噪声 ε ~ N(0, I)
-        noise = torch.randn_like(z_0)
+        noise = torch.randn_like(z_0_scaled)
 
-        # 3. 前向扩散: z_k = √α̅_k · z_0 + √(1-α̅_k) · ε
-        z_k = self.noise_schedule.q_sample(z_0, k, noise)
+        # 3. 前向扩散: z_k = √α̅_k · z_0_scaled + √(1-α̅_k) · ε
+        z_k = self.noise_schedule.q_sample(z_0_scaled, k, noise)
 
         # 4. 无分类器引导：以概率 p_uncond 丢弃条件
         uncond_mask = torch.rand(B, device=device) < self.p_uncond
         history_cond = history.clone()
         history_cond[uncond_mask] = 0.0  # 将条件设为 ∅
 
-        # 5. 自条件机制
-        z_self_cond = torch.zeros_like(z_0)
+        # 5. 自条件机制（在缩放空间中操作）
+        z_self_cond = torch.zeros_like(z_0_scaled)
         use_self_cond = torch.rand(1, device=device).item() < self.self_cond_prob
 
         if use_self_cond:
@@ -273,11 +283,11 @@ class LDiffusion(nn.Module):
                 z_self_cond = self.denoiser(z_k, history_cond, z_self_cond, k)
                 # 自条件估计停止梯度
 
-        # 6. 预测 ẑ₀
+        # 6. 预测 ẑ₀（在缩放空间中）
         z_0_pred = self.denoiser(z_k, history_cond, z_self_cond, k)
 
-        # 7. 损失: MSE(z_0, ẑ₀) — x₀ 预测
-        loss = F.mse_loss(z_0_pred, z_0)
+        # 7. 损失: MSE(z_0_scaled, ẑ₀) — x₀ 预测（缩放空间）
+        loss = F.mse_loss(z_0_pred, z_0_scaled)
 
         metrics = {
             "loss": loss.item(),
@@ -294,18 +304,19 @@ class LDiffusion(nn.Module):
         num_steps: Optional[int] = None,
         progress: bool = False,
     ) -> torch.Tensor:
-        """按算法 2 进行 DDIM 采样。
+        """按算法 2 进行加速采样。
 
-        在反向扩散过程中实现自条件机制和无分类器引导。
+        使用 DDPM 后验均值公式进行反向扩散，支持确定性（类 DDIM）和随机采样。
+        实现自条件机制和无分类器引导。
 
         Args:
             history: 历史窗口 [B, T, d]。
             guidance_strength: 无分类器引导强度 w。
-            num_steps: DDIM 采样步数（默认: 完整 K 步）。
+            num_steps: 采样步数（默认: 完整 K 步）。
             progress: 是否显示进度条。
 
         Returns:
-            干净的潜在变量 z₀ [B, t, m]。
+            干净的潜在变量 z₀ [B, t, m]（缩放空间）。
         """
         B, T, d = history.shape
         device = history.device
@@ -316,9 +327,8 @@ class LDiffusion(nn.Module):
         if num_steps is None:
             num_steps = K
 
-        # 待采样的步索引（均匀间隔，降序）
+        # 均匀间隔的步索引（降序）
         step_indices = torch.linspace(K, 1, num_steps, device=device).long()
-        step_indices = torch.cat([step_indices, torch.tensor([0], device=device)])
 
         # 1. z_K ~ N(0, I)
         z = torch.randn(B, t, m, device=device)
@@ -329,54 +339,36 @@ class LDiffusion(nn.Module):
         # 无条件模型的空条件
         empty_history = torch.zeros(B, T, d, device=device)
 
-        # 迭代各步
-        iterator = range(len(step_indices) - 1)
+        iterator = range(len(step_indices))
         if progress:
             from tqdm import tqdm
-            iterator = tqdm(iterator, desc="DDIM 采样")
+            iterator = tqdm(iterator, desc="采样")
 
         for i in iterator:
-            k_curr = step_indices[i]      # 当前步
-            k_next = step_indices[i + 1]  # 下一步
-
-            # 创建步张量
+            k_curr = step_indices[i]
             k_tensor = torch.full((B,), k_curr, device=device, dtype=torch.long)
 
-            # 7. 自条件预测
+            # 自条件预测（论文算法 2 第 7 行）
             z_self_cond = self.denoiser(z, history, z_self_cond, k_tensor)
 
-            # 8. 条件预测
+            # 条件 + 无条件预测 → 无分类器引导（论文 Eq.7）
             z_0_cond = self.denoiser(z, history, z_self_cond, k_tensor)
-
-            # 无条件预测
             z_0_uncond = self.denoiser(z, empty_history, z_self_cond, k_tensor)
-
-            # 9. 无分类器引导
             z_0_guided = (1 + guidance_strength) * z_0_cond \
                 - guidance_strength * z_0_uncond
 
-            # 10. DDIM 步: z_{k-1} = √α̅_{k-1}·ẑ₀ + √(1-α̅_{k-1})·ε_pred
-            alpha_bar_curr = self.noise_schedule.get_alpha_bar(k_tensor)
+            # DDPM 后验: z_{k-1} = c1·z_k + c2·x̂₀ + σ·ε（论文 Eq.10）
+            c1, c2, sigma = self.noise_schedule.get_ddim_coeffs(k_tensor)
+            c1 = c1.view(-1, 1, 1)
+            c2 = c2.view(-1, 1, 1)
+            sigma = sigma.view(-1, 1, 1)
 
-            # 从 z_k 和 ẑ₀ 计算 ε_pred
-            sqrt_alpha = torch.sqrt(alpha_bar_curr).view(-1, 1, 1)
-            sqrt_one_minus_alpha = torch.sqrt(1.0 - alpha_bar_curr).view(-1, 1, 1)
-            eps_pred = (z - sqrt_alpha * z_0_guided) / sqrt_one_minus_alpha
+            z = c1 * z + c2 * z_0_guided
+            # 确定性采样时 σ=0，此分支无操作
+            if k_curr > 1:
+                z = z + sigma * torch.randn_like(z)
 
-            # 获取 α̅_{k-1}
-            if k_next > 0:
-                k_next_tensor = torch.full((B,), k_next, device=device, dtype=torch.long)
-                alpha_bar_next = self.noise_schedule.get_alpha_bar(k_next_tensor)
-            else:
-                alpha_bar_next = torch.ones(B, device=device)
-
-            sqrt_alpha_next = torch.sqrt(alpha_bar_next).view(-1, 1, 1)
-            sqrt_one_minus_alpha_next = torch.sqrt(1.0 - alpha_bar_next).view(-1, 1, 1)
-
-            # z_{k-1} = √α̅_{k-1}·ẑ₀ + √(1-α̅_{k-1})·ε_pred
-            z = sqrt_alpha_next * z_0_guided + sqrt_one_minus_alpha_next * eps_pred
-
-            # 更新自条件
+            # 更新自条件为当前预测
             z_self_cond = z_0_guided
 
         return z

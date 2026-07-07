@@ -13,8 +13,12 @@
 import argparse
 import os
 import sys
+import warnings
 
 import torch
+
+# 屏蔽 GluonTS JSON 模块警告
+warnings.filterwarnings("ignore", message="Using `json`-module")
 
 # 将项目根目录加入路径
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -42,8 +46,8 @@ def main():
         help="第二阶段检查点路径（.pt 文件）。",
     )
     parser.add_argument(
-        "--num_samples", type=int, default=100,
-        help="经验 CRPS 的采样数（默认: 100）。",
+        "--num_samples", type=int, default=20,
+        help="经验 CRPS 的采样数（默认: 20，论文用 100）。",
     )
     parser.add_argument(
         "--guidance_strength", type=float, default=None,
@@ -99,8 +103,9 @@ def main():
     print(f"  维度: {dimension}")
 
     # 评估
-    print(f"\n正在评估（N={args.num_samples} 个采样）...")
+    print(f"\n正在评估（N={args.num_samples} 个采样，共 {len(test_loader)} 批次）...")
     all_metrics = []
+    total = min(args.max_batches, len(test_loader)) if args.max_batches else len(test_loader)
 
     for batch_idx, (X, Y) in enumerate(test_loader):
         X = X.to(device)
@@ -113,11 +118,9 @@ def main():
         metrics = compute_all_metrics(samples, Y)
         all_metrics.append(metrics)
 
-        print(
-            f"  批次 {batch_idx + 1}/{len(test_loader)} | "
-            f"CRPS-sum: {metrics['crps_sum_mean']:.4f} | "
-            f"MSE: {metrics['mse_mean']:.6e}"
-        )
+        # 每 10 批打印一次进度
+        if (batch_idx + 1) % 10 == 0:
+            print(f"  进度: {batch_idx + 1}/{len(test_loader)}")
 
         if args.max_batches and batch_idx + 1 >= args.max_batches:
             break

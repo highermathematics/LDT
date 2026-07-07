@@ -10,10 +10,14 @@
 import argparse
 import os
 import sys
+import warnings
 
 import matplotlib.pyplot as plt
 import numpy as np
 import torch
+
+# 屏蔽 GluonTS JSON 模块警告
+warnings.filterwarnings("ignore", message="Using `json`-module")
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 

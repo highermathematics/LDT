@@ -29,7 +29,8 @@ class VAECConfig:
     num_layers: int = 3               # 编码器/解码器 Transformer 层数
     num_heads: int = 4                # 注意力头数
     kl_weight: float = 1e-8           # KL 散度正则化权重
-    lr: float = 1e-3                  # 学习率
+    lr: float = 1e-3                  # 生成器学习率
+    disc_lr_mult: float = 0.1         # 判别器学习率乘数（lr_d = lr × disc_lr_mult）
     epochs: int = 100                 # 最大训练轮数
     early_stop_patience: int = 10     # 早停耐心值
 

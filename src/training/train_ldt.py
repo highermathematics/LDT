@@ -49,6 +49,7 @@ def train_ldt_epoch(
 
     total_loss = 0.0
     total_k = 0.0
+    total_sigma = 0.0  # 记录 sigma_hat 的 EMA
 
     pbar = tqdm(dataloader, desc="LDT 训练")
     for batch_idx, (X, Y) in enumerate(pbar):
@@ -59,13 +60,15 @@ def train_ldt_epoch(
         W = torch.cat([X, Y], dim=1)
         vn.update_stats(W.detach())
 
-        # 获取统计量
         E_hat, Var_hat = vn.get_stats()
 
         # 归一化目标并编码到潜在空间
         Y_norm = vn.normalize(Y, E_hat, Var_hat)
         with torch.no_grad():
             z_0 = encoder.encode(Y_norm)  # [B, t, m]
+            # 记录 sigma_hat (用于推理时反缩放)
+            _, s = ldt._scale_latent(z_0)
+            total_sigma += s.item()
 
         # 归一化历史窗口
         X_norm = vn.normalize(
@@ -77,7 +80,7 @@ def train_ldt_epoch(
         optimizer.zero_grad()
         loss, metrics = ldt.training_step(z_0, X_norm)
         loss.backward()
-        torch.nn.utils.clip_grad_norm_(ldt.parameters(), max_norm=1.0)
+        torch.nn.utils.clip_grad_norm_(ldt.parameters(), max_norm=5.0)
         optimizer.step()
 
         total_loss += loss.item()
@@ -87,7 +90,7 @@ def train_ldt_epoch(
             pbar.set_postfix(loss=f"{loss.item():.4f}")
 
     n = len(dataloader)
-    return {"loss": total_loss / n, "k_mean": total_k / n}
+    return {"loss": total_loss / n, "k_mean": total_k / n, "sigma_hat": total_sigma / n}
 
 
 @torch.no_grad()
@@ -101,6 +104,9 @@ def validate_ldt(
     horizon: int,
 ) -> Dict[str, float]:
     """在验证集上验证 LDT。
+
+    与训练一致：在缩放潜在空间中计算去噪 MSE，
+    并使用 self-conditioning 进行最优预测。
 
     Args:
         ldt: 潜在扩散模型。
@@ -132,14 +138,21 @@ def validate_ldt(
             E_hat, Var_hat,
         )[:, :lookback, :]
 
+        # 与训练一致：缩放到单位方差空间
+        z_0_scaled, _ = ldt._scale_latent(z_0)
+
         k = torch.randint(1, ldt.diffusion_steps + 1, (X.shape[0],), device=device)
-        noise = torch.randn_like(z_0)
-        z_k = ldt.noise_schedule.q_sample(z_0, k, noise)
+        noise = torch.randn_like(z_0_scaled)
+        z_k = ldt.noise_schedule.q_sample(z_0_scaled, k, noise)
 
-        z_self_cond = torch.zeros_like(z_0)
-        z_0_pred = ldt.denoiser(z_k, X_norm, z_self_cond, k)
+        # Self-conditioning：eval 时始终使用
+        # 先预测一次获取初始 ẑ₀ 估计，再用于最终条件预测
+        z_self_cond_init = torch.zeros_like(z_0_scaled)
+        z_0_first = ldt.denoiser(z_k, X_norm, z_self_cond_init, k)
+        z_0_pred = ldt.denoiser(z_k, X_norm, z_0_first, k)
 
-        total_loss += torch.nn.functional.mse_loss(z_0_pred, z_0).item()
+        # 在缩放空间中计算 MSE（与训练损失一致）
+        total_loss += torch.nn.functional.mse_loss(z_0_pred, z_0_scaled).item()
 
     return {"val_loss": total_loss / len(dataloader)}
 
@@ -194,7 +207,7 @@ def train_stage2(
     # VN 层
     vn = VarianceUpdateNorm(num_features=d_data).to(device)
     if "vn" in ckpt:
-        vn.load_state_dict(ckpt["vn"])
+        vn.load_state_dict(ckpt["vn"], strict=False)
     vn.eval()
 
     # 创建 LDT 模型
@@ -270,6 +283,7 @@ def train_stage2(
                         "beta_1": config.diffusion.beta_1,
                         "beta_T": config.diffusion.beta_T,
                     },
+                    "sigma_hat": train_metrics["sigma_hat"],  # 推理时反缩放用
                     "epoch": epoch,
                     "val_loss": val_loss,
                 },

@@ -436,25 +436,50 @@ class VAE(nn.Module):
         return total, rec_loss, kl, adv_loss
 
     def discriminator_loss(
-        self, y_real: torch.Tensor, y_recon: torch.Tensor
-    ) -> torch.Tensor:
-        """计算判别器损失。
+        self,
+        y_real: torch.Tensor,
+        y_recon: torch.Tensor,
+        r1_gamma: float = 1.0,
+        label_smooth: float = 0.1,
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
+        """计算判别器损失（带 R1 梯度惩罚和标签平滑）。
+
+        R1 正则化 ||∇_x D(x)||² 鼓励判别器在真实数据附近平滑，
+        防止判别器过强导致生成器梯度消失。
 
         Args:
             y_real: 真实值 [B, t, d]。
-            y_recon: 重建值 [B, t, d]（已从生成器计算图中分离）。
+            y_recon: 重建值 [B, t, d]（已分离）。
+            r1_gamma: R1 惩罚权重。
+            label_smooth: 标签平滑量（0=无平滑）。
 
         Returns:
-            标量判别器损失。
+            (total_loss, r1_penalty) 元组。
         """
-        disc_real = self.discriminator(y_real)
-        disc_fake = self.discriminator(y_recon.detach())
+        # 输入加噪：防止判别器过拟合
+        noise_scale = 0.01
+        y_real_noisy = y_real + noise_scale * torch.randn_like(y_real)
+        y_fake_noisy = y_recon.detach() + noise_scale * torch.randn_like(y_recon)
 
-        real_loss = F.binary_cross_entropy_with_logits(
-            disc_real, torch.ones_like(disc_real)
-        )
-        fake_loss = F.binary_cross_entropy_with_logits(
-            disc_fake, torch.zeros_like(disc_fake)
-        )
+        # 需要梯度的真实输入用于 R1 惩罚
+        y_real_grad = y_real_noisy.detach().requires_grad_(True)
+        disc_real = self.discriminator(y_real_grad)
+        disc_fake = self.discriminator(y_fake_noisy)
 
-        return real_loss + fake_loss
+        # 标签平滑: 真实→1-label_smooth, 虚假→label_smooth
+        real_target = torch.ones_like(disc_real) * (1.0 - label_smooth)
+        fake_target = torch.ones_like(disc_fake) * label_smooth
+
+        real_loss = F.binary_cross_entropy_with_logits(disc_real, real_target)
+        fake_loss = F.binary_cross_entropy_with_logits(disc_fake, fake_target)
+
+        # R1 梯度惩罚: γ/2 × ||∇_x D(x_real)||²
+        grad_real = torch.autograd.grad(
+            outputs=disc_real.sum(),
+            inputs=y_real_grad,
+            create_graph=True,
+            only_inputs=True,
+        )[0]
+        r1_penalty = 0.5 * r1_gamma * (grad_real ** 2).mean()
+
+        return real_loss + fake_loss + r1_penalty, r1_penalty.detach()

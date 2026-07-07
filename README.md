@@ -52,9 +52,10 @@ LDT/
 │       ├── metrics.py     # CRPS-sum、MSE 指标
 │       └── inference.py   # DDIM 推理管线
 ├── scripts/
-│   ├── train.py           # 主训练入口
-│   ├── evaluate.py        # 测试集评估
-│   └── visualize.py       # 预测可视化
+│   ├── train.py           # 单数据集训练
+│   ├── evaluate.py        # 单数据集评估
+│   ├── visualize.py       # 预测可视化
+│   └── run_all.py         # 一键训练+评估全部 5 个数据集
 └── checkpoints/           # 模型权重保存目录
 ```
 
@@ -75,6 +76,20 @@ python scripts/train.py --config configs/solar.yaml --stage 1
 仅训练第二阶段（LDT，需要第一阶段的检查点）：
 ```bash
 python scripts/train.py --config configs/solar.yaml --stage 2
+```
+
+### 一键运行全部数据集
+
+自动训练 + 评估全部 5 个数据集，最后打印汇总对比表：
+```bash
+python scripts/run_all.py
+```
+
+可选参数：
+```bash
+python scripts/run_all.py --datasets solar,taxi    # 只跑指定数据集
+python scripts/run_all.py --skip_train             # 仅评估已有检查点
+python scripts/run_all.py --device cuda            # 指定设备
 ```
 
 ### 评估

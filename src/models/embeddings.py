@@ -118,7 +118,7 @@ class DiffusionStepEmbedding(nn.Module):
         """获取扩散步嵌入。
 
         Args:
-            k: 扩散步索引 [B] 或 [B, 1]（0 起始）。
+            k: 扩散步索引 [B] 或 [B, 1]（**1 起始**，与 q_sample 一致）。
 
         Returns:
             步嵌入 [B, n]，其中 n = 4m。
@@ -127,6 +127,7 @@ class DiffusionStepEmbedding(nn.Module):
             k = k.unsqueeze(0)
         if k.dim() == 2:
             k = k.squeeze(-1)
-        k = k.long().clamp(0, self.max_steps - 1)
+        # k 是 1 起始的（1..K），转换为 0 起始索引（0..K-1）
+        k = (k - 1).long().clamp(0, self.max_steps - 1)
         emb = self.pe[k]  # [B, n]
         return self.mlp(emb)

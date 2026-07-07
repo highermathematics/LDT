@@ -13,9 +13,13 @@ import argparse
 import os
 import random
 import sys
+import warnings
 
 import numpy as np
 import torch
+
+# 屏蔽 GluonTS JSON 模块警告
+warnings.filterwarnings("ignore", message="Using `json`-module")
 
 # 将项目根目录加入路径
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -111,17 +115,25 @@ def main():
         print("第二阶段: 训练 LDT 扩散模型")
         print("=" * 60)
 
-        # 重新创建 DataLoader（可能已被消耗）
+        # 从 Stage I 检查点读取维度，确保与 VAE 编码器一致
+        import torch as _torch
+        _ckpt = _torch.load(
+            os.path.join(stage1_dir, "best_model.pt"),
+            map_location="cpu", weights_only=True,
+        )
+        saved_dim = _ckpt.get("dimension", _ckpt["vae_config"]["d_data"])
+        config.dataset.dimension = saved_dim
+
+        # 重新创建 DataLoader，强制使用与 Stage I 一致的维度
         train_loader, val_loader, test_loader, dimension = create_dataloaders(
             name=dataset_name,
             prediction_length=config.dataset.prediction_length,
             lookback_window=config.dataset.lookback_window,
             batch_size=config.training.batch_size,
             num_workers=config.training.num_workers,
+            force_dimension=saved_dim,
         )
-
-        config.dataset.dimension = dimension
-        print(f"  实际维度: {dimension}")
+        print(f"  使用 Stage I 维度: {dimension} (强制 d={saved_dim})")
 
         stage2_dir = train_stage2(config, train_loader, val_loader, stage1_dir)
         print(f"第二阶段检查点已保存到: {stage2_dir}")

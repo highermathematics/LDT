@@ -54,68 +54,51 @@ def load_multivariate_data(
     name: str,
     prediction_length: int,
     lookback_window: Optional[int] = None,
+    force_dimension: Optional[int] = None,
 ) -> Tuple[np.ndarray, np.ndarray, np.ndarray, int]:
     """加载并准备多元时间序列数据。
 
-    GluonTS 中数据以多条单变量序列形式存储，本函数将其合并为
-    一条多元序列 [总时间步, 特征维度 d]，然后创建滑动窗口。
-
     Args:
-        name: 数据集名称（solar, electricity, traffic, taxi, wikipedia）。
+        name: 数据集名称。
         prediction_length: 预测长度 t。
         lookback_window: 历史长度 T，默认为 4 × prediction_length。
+        force_dimension: 强制使用的维度数（None=自动检测）。
 
     Returns:
-        (train_data, val_data, test_data, dimension) 元组，
-        每个划分是形状为 [N, T+t, d] 的 numpy 数组。
+        (train_data, val_data, test_data, dimension) 元组。
     """
     if lookback_window is None:
         lookback_window = 4 * prediction_length
 
     total_len = lookback_window + prediction_length
 
-    # 从 GluonTS 加载
     gluonts_data = _get_gluonts_dataset(name)
 
     def _stack_multivariate(entries, num_series: Optional[int] = None) -> np.ndarray:
-        """将多条单变量 GluonTS 序列合并为一条多元序列。
-
-        GluonTS 中每条 entry["target"] 形状为 [1, timesteps]，
-        将所有序列对齐到相同长度后堆叠为 [timesteps, d]。
-
-        Args:
-            entries: GluonTS 数据集条目列表。
-            num_series: 使用的序列数量（None 表示全部使用）。
-        """
         arrays = []
         for entry in entries:
             vals = entry["target"]
             if vals.ndim == 2:
-                vals = vals.squeeze(0)  # [1, T] → [T]
+                vals = vals.squeeze(0)
             arrays.append(vals.astype(np.float32))
-
-        # 只取前 num_series 条（确保 train/test 维度一致）
         if num_series is not None:
             arrays = arrays[:num_series]
-
-        # 对齐到最短长度
         min_len = min(len(a) for a in arrays)
         trimmed = [a[:min_len] for a in arrays]
+        return np.stack(trimmed, axis=1)
 
-        # 堆叠为多元序列: [d, min_len] → [min_len, d]
-        stacked = np.stack(trimmed, axis=1)  # [min_len, d]
-        return stacked
-
-    # 确保 train/test 使用相同数量的序列（取两者中的最小值）
+    # 确定共用的序列数
     n_train = len(gluonts_data.train)
     n_test = len(gluonts_data.test)
     n_common = min(n_train, n_test)
+    if force_dimension is not None:
+        n_common = min(n_common, force_dimension)
+
     if n_train != n_test:
-        print(f"  [!] train 有 {n_train} 条序列, test 有 {n_test} 条序列, 截取前 {n_common} 条")
+        print(f"  [!] train 有 {n_train} 条序列, test 有 {n_test} 条序列, 统一取前 {n_common} 条")
 
     train_mv = _stack_multivariate(gluonts_data.train, num_series=n_common)
     test_mv = _stack_multivariate(gluonts_data.test, num_series=n_common)
-
     dimension = train_mv.shape[1]
     print(f"  合并后多元序列: train={train_mv.shape}, test={test_mv.shape}, 维度 d={dimension}")
 
@@ -182,6 +165,7 @@ def create_dataloaders(
     lookback_window: Optional[int] = None,
     batch_size: int = 64,
     num_workers: int = 4,
+    force_dimension: Optional[int] = None,
 ) -> Tuple[DataLoader, DataLoader, DataLoader, int]:
     """为指定数据集创建训练/验证/测试 DataLoader。
 
@@ -198,8 +182,12 @@ def create_dataloaders(
     if lookback_window is None:
         lookback_window = 4 * prediction_length
 
+    # Windows 上 multiprocessing 有问题，强制单进程
+    if os.name == "nt":
+        num_workers = 0
+
     train_data, val_data, test_data, dimension = load_multivariate_data(
-        name, prediction_length, lookback_window
+        name, prediction_length, lookback_window, force_dimension=force_dimension
     )
 
     train_ds = TimeSeriesWindowDataset(train_data, lookback_window, prediction_length)

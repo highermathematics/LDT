@@ -1,9 +1,10 @@
 """LDT 模型推理工具。
 
-从训练好的 LDT 模型执行 DDIM 采样并将预测解码回时间域。
+从训练好的 LDT 模型执行批量 DDIM 采样并解码回时间域。
+使用训练时记录的 sigma_hat 对潜在变量反缩放。
 """
 
-from typing import List, Optional
+from typing import Optional
 
 import torch
 from tqdm import tqdm
@@ -16,9 +17,6 @@ from src.models.diffusion import LDiffusion
 class LDTInference:
     """完整 LDT 管线的推理封装。
 
-    组合 VN 归一化、编码器、LDT 扩散模型和解码器，
-    实现端到端的概率预测。
-
     Args:
         ldt: 训练好的 LDT 扩散模型。
         encoder: 冻结的 VAE 编码器。
@@ -26,7 +24,9 @@ class LDTInference:
         vn: 方差更新归一化层。
         guidance_strength: 无分类器引导强度 w。
         num_samples: 概率预测的采样数。
-        ddim_steps: DDIM 采样步数（默认: 完整扩散步数）。
+        ddim_steps: DDIM 采样步数。
+        sample_batch_size: 每批并行采样数（控制显存）。
+        sigma_hat: 训练时记录的 EMA 潜在标准差，用于推理反缩放。
     """
 
     def __init__(
@@ -36,8 +36,10 @@ class LDTInference:
         decoder: Decoder,
         vn: VarianceUpdateNorm,
         guidance_strength: float = 3.0,
-        num_samples: int = 100,
+        num_samples: int = 50,
         ddim_steps: Optional[int] = None,
+        sample_batch_size: int = 8,
+        sigma_hat: float = 1.0,
     ):
         self.ldt = ldt
         self.encoder = encoder
@@ -45,7 +47,9 @@ class LDTInference:
         self.vn = vn
         self.guidance_strength = guidance_strength
         self.num_samples = num_samples
-        self.ddim_steps = ddim_steps or ldt.diffusion_steps
+        self.ddim_steps = ddim_steps or 50
+        self.sample_batch_size = sample_batch_size
+        self.sigma_hat = sigma_hat
 
     @torch.no_grad()
     def predict(
@@ -54,13 +58,7 @@ class LDTInference:
         Y_target: Optional[torch.Tensor] = None,
         progress: bool = True,
     ) -> torch.Tensor:
-        """生成概率预测。
-
-        流程：
-        1. VN 归一化历史数据
-        2. 编码历史（可选：编码目标用于评估）
-        3. DDIM 采样 N 条潜在轨迹
-        4. 将每条轨迹解码回时间域
+        """批量并行 DDIM 采样 → 反缩放 → 解码。
 
         Args:
             X_history: 历史窗口 [B, T, d]。
@@ -68,48 +66,48 @@ class LDTInference:
             progress: 是否显示进度条。
 
         Returns:
-            采样张量 [N, B, t, d]。
+            采样张量 [N, B, t, d]（原始数据空间）。
         """
         device = X_history.device
         B, T, d_data = X_history.shape
         t = self.ldt.pred_len
+        N = self.num_samples
+        K = self.sample_batch_size
 
-        # 如提供目标，则更新 VN 统计量
         if Y_target is not None:
-            W = torch.cat([X_history, Y_target], dim=1)
-            self.vn.update_stats(W)
+            self.vn.update_stats(torch.cat([X_history, Y_target], dim=1))
 
         E_hat, Var_hat = self.vn.get_stats()
-
-        # 归一化历史数据
         X_norm = self.vn.normalize(
             torch.cat([X_history, torch.zeros(B, t, d_data, device=device)], dim=1),
             E_hat, Var_hat,
-        )[:, :T, :]  # [B, T, d]
+        )[:, :T, :]
 
-        samples_list = []
-        iterator = range(self.num_samples)
-        if progress:
-            iterator = tqdm(iterator, desc="生成采样")
+        all_samples = []
+        chunks = list(range(0, N, K))
+        if progress and len(chunks) > 1:
+            chunks = tqdm(chunks, desc=f"DDIM ({N}*{self.ddim_steps}步)")
 
-        for _ in iterator:
-            # 在潜在空间中 DDIM 采样
-            z_0 = self.ldt.sample(
-                X_norm,
+        for start in chunks:
+            n = min(K, N - start)
+            X_batch = X_norm.repeat(n, 1, 1)  # [B*n, T, d]
+
+            # DDIM 采样（缩放空间）
+            z_scaled = self.ldt.sample(
+                X_batch,
                 guidance_strength=self.guidance_strength,
                 num_steps=self.ddim_steps,
-            )  # [B, t, m]
+            )  # [B*n, t, m]
 
-            # 解码回时间域
-            Y_norm_pred = self.decoder(z_0)  # [B, t, d]
+            # 反缩放: Z = Z_scaled * sigma_hat
+            z = z_scaled * self.sigma_hat
 
-            # 反归一化
-            Y_pred = self.vn.denormalize(Y_norm_pred, E_hat, Var_hat)  # [B, t, d]
+            # 解码 → 反归一化
+            Y_pred = self.vn.denormalize(self.decoder(z), E_hat, Var_hat)  # [B*n, t, d]
+            Y_pred = Y_pred.view(n, B, t, d_data)
+            all_samples.append(Y_pred)
 
-            samples_list.append(Y_pred.unsqueeze(0))  # [1, B, t, d]
-
-        samples = torch.cat(samples_list, dim=0)  # [N, B, t, d]
-        return samples
+        return torch.cat(all_samples, dim=0)  # [N, B, t, d]
 
 
 def load_model_from_checkpoints(
@@ -119,37 +117,21 @@ def load_model_from_checkpoints(
     guidance_strength: float = 3.0,
     ddim_steps: Optional[int] = None,
 ) -> LDTInference:
-    """从保存的检查点加载完整 LDT 推理管线。
-
-    Args:
-        stage1_path: 第一阶段检查点文件路径。
-        stage2_path: 第二阶段检查点文件路径。
-        device: 计算设备。
-        guidance_strength: CFG 引导强度 w。
-        ddim_steps: 采样的 DDIM 步数。
-
-    Returns:
-        可用于预测的 LDTInference 实例。
-    """
-    # 加载第一阶段
+    """从保存的检查点加载完整 LDT 推理管线。"""
     ckpt1 = torch.load(stage1_path, map_location=device)
     vae_cfg = ckpt1["vae_config"]
 
     encoder = Encoder(
-        d_input=vae_cfg["d_data"],
-        d_latent=vae_cfg["d_latent"],
-        d_model=vae_cfg["d_model"],
-        n_heads=vae_cfg["n_heads"],
+        d_input=vae_cfg["d_data"], d_latent=vae_cfg["d_latent"],
+        d_model=vae_cfg["d_model"], n_heads=vae_cfg["n_heads"],
         n_layers=vae_cfg["n_layers"],
     ).to(device)
     encoder.load_state_dict(ckpt1["encoder"])
     encoder.eval()
 
     decoder = Decoder(
-        d_output=vae_cfg["d_data"],
-        d_latent=vae_cfg["d_latent"],
-        d_model=vae_cfg["d_model"],
-        n_heads=vae_cfg["n_heads"],
+        d_output=vae_cfg["d_data"], d_latent=vae_cfg["d_latent"],
+        d_model=vae_cfg["d_model"], n_heads=vae_cfg["n_heads"],
         n_layers=vae_cfg["n_layers"],
     ).to(device)
     decoder.load_state_dict(ckpt1["decoder"])
@@ -157,34 +139,25 @@ def load_model_from_checkpoints(
 
     vn = VarianceUpdateNorm(num_features=vae_cfg["d_data"]).to(device)
     if "vn" in ckpt1:
-        vn.load_state_dict(ckpt1["vn"])
+        vn.load_state_dict(ckpt1["vn"], strict=False)
     vn.eval()
 
-    # 加载第二阶段
     ckpt2 = torch.load(stage2_path, map_location=device)
     ldt_cfg = ckpt2["ldt_config"]
+    sigma_hat = ckpt2.get("sigma_hat", 1.0)
 
     ldt = LDiffusion(
-        d_data=ldt_cfg["d_data"],
-        d_latent=ldt_cfg["d_latent"],
-        d_model=ldt_cfg["d_model"],
-        n_heads=ldt_cfg["n_heads"],
-        n_layers=ldt_cfg["n_layers"],
-        history_len=ldt_cfg["history_len"],
-        pred_len=ldt_cfg["pred_len"],
-        diffusion_steps=ldt_cfg["diffusion_steps"],
-        beta_1=ldt_cfg["beta_1"],
-        beta_T=ldt_cfg["beta_T"],
+        d_data=ldt_cfg["d_data"], d_latent=ldt_cfg["d_latent"],
+        d_model=ldt_cfg["d_model"], n_heads=ldt_cfg["n_heads"],
+        n_layers=ldt_cfg["n_layers"], history_len=ldt_cfg["history_len"],
+        pred_len=ldt_cfg["pred_len"], diffusion_steps=ldt_cfg["diffusion_steps"],
+        beta_1=ldt_cfg["beta_1"], beta_T=ldt_cfg["beta_T"],
     ).to(device)
     ldt.load_state_dict(ckpt2["ldt_state_dict"])
     ldt.eval()
 
     return LDTInference(
-        ldt=ldt,
-        encoder=encoder,
-        decoder=decoder,
-        vn=vn,
-        guidance_strength=guidance_strength,
-        num_samples=100,
-        ddim_steps=ddim_steps,
+        ldt=ldt, encoder=encoder, decoder=decoder, vn=vn,
+        guidance_strength=guidance_strength, num_samples=50,
+        ddim_steps=ddim_steps, sigma_hat=sigma_hat,
     )
