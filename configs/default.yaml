@@ -27,7 +27,7 @@ diffusion:
   p_uncond: 0.1
   self_cond_prob: 0.5    # 论文: 50%
   guidance_strength: 3.0
-  lr: 0.0003              # DiT 架构用更低 LR 避免震荡
+  lr: 0.001               # 论文: Adam lr=1e-3
   epochs: 300
   early_stop_patience: 20
   ddim_steps: 25

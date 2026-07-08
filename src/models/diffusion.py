@@ -349,7 +349,10 @@ class LDiffusion(nn.Module):
             k_curr = step_indices[i]
             k_tensor = torch.full((B,), k_curr, device=device, dtype=torch.long)
 
-            # 论文 Algorithm 2 第 7-8 行：条件预测（自条件 + 用于 CFG）
+            # 论文 Algorithm 2 第 7 行：空历史自条件（"盲猜"）
+            z_self_cond = self.denoiser(z, empty_history, z_self_cond, k_tensor)
+
+            # 论文 Algorithm 2 第 8 行：真实历史条件预测
             z_0_cond = self.denoiser(z, history, z_self_cond, k_tensor)
 
             # 无条件预测 → 无分类器引导（论文 Eq.7）
@@ -364,11 +367,7 @@ class LDiffusion(nn.Module):
             sigma = sigma.view(-1, 1, 1)
 
             z = c1 * z + c2 * z_0_guided
-            # 确定性采样时 σ=0，此分支无操作
             if k_curr > 1:
                 z = z + sigma * torch.randn_like(z)
-
-            # 更新自条件为原始条件预测（非 CFG 输出，论文 Algorithm 2 第 7 行）
-            z_self_cond = z_0_cond
 
         return z
