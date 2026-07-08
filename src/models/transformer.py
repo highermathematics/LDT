@@ -1,7 +1,7 @@
-"""LDT 去噪网络：DiT 风格的 adaLN Transformer（与论文图 1b 一致）。
+"""LDT 去噪网络：论文 adaLN Transformer（与论文图 1b 一致）。
 
-使用 pre-norm adaLN + gate 残差机制（DiT, Peebles & Xie 2023）。
-adaLN 零初始化保证训练初期为恒等映射，杜绝梯度消失。
+使用 pre-norm adaLN: scale × LN(x) + shift，无 gate 残差。
+adaLN bias 初始化 γ≈1, β≈0 保证训练初期接近恒等映射。
 """
 
 from typing import Optional
@@ -18,32 +18,32 @@ from .embeddings import DiffusionStepEmbedding, PositionalEmbedding
 # ---------------------------------------------------------------------------
 
 def modulate(x: torch.Tensor, shift: torch.Tensor, scale: torch.Tensor) -> torch.Tensor:
-    """DiT 调制: x * (1 + scale) + shift。
+    """adaLN 调制: x * scale + shift（论文图 1b）。
 
     Args:
         x: [B, seq, d_model]（已做 LayerNorm）。
         shift, scale: [B, d_model]。
     """
-    return x * (1.0 + scale.unsqueeze(1)) + shift.unsqueeze(1)
+    return x * scale.unsqueeze(1) + shift.unsqueeze(1)
 
 
 class AdaLNModulation(nn.Module):
-    """DiT 风格 adaLN：从扩散步嵌入回归 shift, scale, gate。
+    """论文 adaLN：从扩散步嵌入回归 shift, scale。
 
-    零初始化确保训练初期 shift=0, scale=0, gate=0，
-    此时 adaLN block 退化为恒等映射，梯度不衰减。
+    初始化: shift=0, scale≈1，初始时 adaLN 退化为 LN → 恒等映射。
     """
 
     def __init__(self, d_model: int, d_temb: int):
         super().__init__()
-        self.proj = nn.Linear(d_temb, 3 * d_model)
-        # 零初始化
+        self.proj = nn.Linear(d_temb, 2 * d_model)
+        # 零权重 + bias: scale≈1, shift=0
         nn.init.zeros_(self.proj.weight)
-        nn.init.zeros_(self.proj.bias)
+        nn.init.ones_(self.proj.bias[:d_model])    # scale ≈ 1
+        nn.init.zeros_(self.proj.bias[d_model:])   # shift = 0
 
     def forward(self, t_emb: torch.Tensor) -> tuple:
-        shift, scale, gate = self.proj(t_emb).chunk(3, dim=-1)
-        return shift, scale, gate
+        shift, scale = self.proj(t_emb).chunk(2, dim=-1)
+        return shift, scale
 
 
 # ---------------------------------------------------------------------------
@@ -51,10 +51,10 @@ class AdaLNModulation(nn.Module):
 # ---------------------------------------------------------------------------
 
 class DiTEncoderLayer(nn.Module):
-    """DiT 编码器块：pre-norm + adaLN + gate 残差。
+    """论文编码器块：pre-norm + adaLN（无 gate 残差）。
 
-    x = x + gate ⊙ Attn( modulate(LN(x), shift, scale) )
-    x = x + gate' ⊙ FFN( modulate(LN(x), shift', scale') )
+    x = x + Attn( modulate(LN(x), shift, scale) )
+    x = x + FFN( modulate(LN(x), shift', scale') )
     """
 
     def __init__(
@@ -86,28 +86,28 @@ class DiTEncoderLayer(nn.Module):
 
     def forward(self, x: torch.Tensor, t_emb: torch.Tensor) -> torch.Tensor:
         # Self-attention sublayer
-        shift, scale, gate = self.adaln1(t_emb)
+        shift, scale = self.adaln1(t_emb)
         x_norm = self.norm1(x)
         x_mod = modulate(x_norm, shift, scale)
         attn_out, _ = self.self_attn(x_mod, x_mod, x_mod)
-        x = x + gate.unsqueeze(1) * self.dropout1(attn_out)
+        x = x + self.dropout1(attn_out)
 
         # FFN sublayer
-        shift, scale, gate = self.adaln2(t_emb)
+        shift, scale = self.adaln2(t_emb)
         x_norm = self.norm2(x)
         x_mod = modulate(x_norm, shift, scale)
         ff_out = self.linear2(F.gelu(self.linear1(x_mod)))
-        x = x + gate.unsqueeze(1) * self.dropout2(ff_out)
+        x = x + self.dropout2(ff_out)
 
         return x
 
 
 class DiTDecoderLayer(nn.Module):
-    """DiT 解码器块：自注意力 + 交叉注意力 + FFN，全部 pre-norm + adaLN + gate。
+    """论文解码器块：自注意力 + 交叉注意力 + FFN，全部 pre-norm + adaLN（无 gate）。
 
-    x = x + gate_s ⊙ SelfAttn( modulate(LN(x), shift_s, scale_s) )
-    x = x + gate_c ⊙ CrossAttn( modulate(LN(x), shift_c, scale_c), memory )
-    x = x + gate_f ⊙ FFN( modulate(LN(x), shift_f, scale_f) )
+    x = x + SelfAttn( modulate(LN(x), shift_s, scale_s) )
+    x = x + CrossAttn( modulate(LN(x), shift_c, scale_c), memory )
+    x = x + FFN( modulate(LN(x), shift_f, scale_f) )
     """
 
     def __init__(
@@ -149,25 +149,25 @@ class DiTDecoderLayer(nn.Module):
         self, x: torch.Tensor, memory: torch.Tensor, t_emb: torch.Tensor
     ) -> torch.Tensor:
         # Self-attention
-        shift, scale, gate = self.adaln1(t_emb)
+        shift, scale = self.adaln1(t_emb)
         x_norm = self.norm1(x)
         x_mod = modulate(x_norm, shift, scale)
         attn_out, _ = self.self_attn(x_mod, x_mod, x_mod)
-        x = x + gate.unsqueeze(1) * self.dropout1(attn_out)
+        x = x + self.dropout1(attn_out)
 
         # Cross-attention
-        shift, scale, gate = self.adaln2(t_emb)
+        shift, scale = self.adaln2(t_emb)
         x_norm = self.norm2(x)
         x_mod = modulate(x_norm, shift, scale)
         cross_out, _ = self.cross_attn(x_mod, memory, memory)
-        x = x + gate.unsqueeze(1) * self.dropout2(cross_out)
+        x = x + self.dropout2(cross_out)
 
         # FFN
-        shift, scale, gate = self.adaln3(t_emb)
+        shift, scale = self.adaln3(t_emb)
         x_norm = self.norm3(x)
         x_mod = modulate(x_norm, shift, scale)
         ff_out = self.linear2(F.gelu(self.linear1(x_mod)))
-        x = x + gate.unsqueeze(1) * self.dropout3(ff_out)
+        x = x + self.dropout3(ff_out)
 
         return x
 

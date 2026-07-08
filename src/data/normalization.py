@@ -22,7 +22,7 @@ class VarianceUpdateNorm(nn.Module):
         eps: 数值稳定性小常数。
     """
 
-    def __init__(self, num_features: int, eps: float = 1e-5):
+    def __init__(self, num_features: int, eps: float = 1e-4):
         super().__init__()
         self.num_features = num_features
         self.eps = eps
@@ -31,9 +31,9 @@ class VarianceUpdateNorm(nn.Module):
         self.gamma = nn.Parameter(torch.ones(num_features))
         self.beta = nn.Parameter(torch.zeros(num_features))
 
-        # 运行中的 EMA 统计量，初始化为 None
-        self.register_buffer("E_hat", None)    # [d]
-        self.register_buffer("Var_hat", None)  # [d]
+        # 运行中的 EMA 统计量，初始化为零（训练时由 update_stats 填充）
+        self.register_buffer("E_hat", torch.zeros(num_features))
+        self.register_buffer("Var_hat", torch.ones(num_features))
         self.register_buffer("n_batches", torch.zeros(1, dtype=torch.long))
 
     def compute_instance_stats(
@@ -70,7 +70,7 @@ class VarianceUpdateNorm(nn.Module):
 
         n = self.n_batches.item() + 1
 
-        if self.E_hat is None:
+        if self.n_batches.item() == 0:
             # 第一个 batch：直接初始化
             self.E_hat = E_new.detach().clone()
             self.Var_hat = Var_new.detach().clone()
@@ -102,9 +102,6 @@ class VarianceUpdateNorm(nn.Module):
         if Var_hat is None:
             Var_hat = self.Var_hat
 
-        if E_hat is None or Var_hat is None:
-            raise RuntimeError("统计量尚未初始化，请先调用 update_stats()。")
-
         # 广播: [d] → [1, 1, d]
         E = E_hat.view(1, 1, -1)
         V = Var_hat.view(1, 1, -1)
@@ -134,9 +131,6 @@ class VarianceUpdateNorm(nn.Module):
         if Var_hat is None:
             Var_hat = self.Var_hat
 
-        if E_hat is None or Var_hat is None:
-            raise RuntimeError("统计量尚未初始化，请先调用 update_stats()。")
-
         E = E_hat.view(1, 1, -1)
         V = Var_hat.view(1, 1, -1)
 
@@ -151,12 +145,10 @@ class VarianceUpdateNorm(nn.Module):
         Returns:
             (E_hat [d], Var_hat [d]) 元组。
         """
-        if self.E_hat is None or self.Var_hat is None:
-            raise RuntimeError("统计量尚未初始化。")
         return self.E_hat, self.Var_hat
 
     def reset_stats(self) -> None:
         """重置运行统计量。"""
-        self.E_hat = None
-        self.Var_hat = None
+        self.E_hat.zero_()
+        self.Var_hat.fill_(1.0)
         self.n_batches.fill_(0)

@@ -1,7 +1,7 @@
 """LDT 模型推理工具。
 
 从训练好的 LDT 模型执行批量 DDIM 采样并解码回时间域。
-使用训练时记录的 sigma_hat 对潜在变量反缩放。
+使用训练时记录的 sigma_hat 对潜在变量反缩放（论文第4页）。
 """
 
 from typing import Optional
@@ -26,7 +26,7 @@ class LDTInference:
         num_samples: 概率预测的采样数。
         ddim_steps: DDIM 采样步数。
         sample_batch_size: 每批并行采样数（控制显存）。
-        sigma_hat: 训练时记录的 EMA 潜在标准差，用于推理反缩放。
+        sigma_hat: 训练时记录的 EMA 潜在标准差，用于推理反缩放（论文第4页）。
     """
 
     def __init__(
@@ -74,9 +74,7 @@ class LDTInference:
         N = self.num_samples
         K = self.sample_batch_size
 
-        if Y_target is not None:
-            self.vn.update_stats(torch.cat([X_history, Y_target], dim=1))
-
+        # 使用 VN 中保存的训练统计量，不随测试数据更新
         E_hat, Var_hat = self.vn.get_stats()
         X_norm = self.vn.normalize(
             torch.cat([X_history, torch.zeros(B, t, d_data, device=device)], dim=1),
@@ -99,7 +97,7 @@ class LDTInference:
                 num_steps=self.ddim_steps,
             )  # [B*n, t, m]
 
-            # 反缩放: Z = Z_scaled * sigma_hat
+            # 反缩放: Z = Z_scaled × σ̂（论文第4页）
             z = z_scaled * self.sigma_hat
 
             # 解码 → 反归一化

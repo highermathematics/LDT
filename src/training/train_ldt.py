@@ -49,7 +49,7 @@ def train_ldt_epoch(
 
     total_loss = 0.0
     total_k = 0.0
-    total_sigma = 0.0  # 记录 sigma_hat 的 EMA
+    total_sigma = 0.0  # EMA of sigma_hat for inference unscaling
 
     pbar = tqdm(dataloader, desc="LDT 训练")
     for batch_idx, (X, Y) in enumerate(pbar):
@@ -62,13 +62,10 @@ def train_ldt_epoch(
 
         E_hat, Var_hat = vn.get_stats()
 
-        # 归一化目标并编码到潜在空间
+        # 归一化目标并编码到潜在空间（论文 Algorithm 1 第 4 行）
         Y_norm = vn.normalize(Y, E_hat, Var_hat)
         with torch.no_grad():
             z_0 = encoder.encode(Y_norm)  # [B, t, m]
-            # 记录 sigma_hat (用于推理时反缩放)
-            _, s = ldt._scale_latent(z_0)
-            total_sigma += s.item()
 
         # 归一化历史窗口
         X_norm = vn.normalize(
@@ -80,11 +77,11 @@ def train_ldt_epoch(
         optimizer.zero_grad()
         loss, metrics = ldt.training_step(z_0, X_norm)
         loss.backward()
-        torch.nn.utils.clip_grad_norm_(ldt.parameters(), max_norm=5.0)
         optimizer.step()
 
         total_loss += loss.item()
         total_k += metrics["k_mean"]
+        total_sigma += metrics["sigma_hat"]
 
         if batch_idx % log_interval == 0:
             pbar.set_postfix(loss=f"{loss.item():.4f}")
@@ -138,20 +135,19 @@ def validate_ldt(
             E_hat, Var_hat,
         )[:, :lookback, :]
 
-        # 与训练一致：缩放到单位方差空间
+        # 按论文第4页: 缩放潜在变量
         z_0_scaled, _ = ldt._scale_latent(z_0)
 
+        # 验证：始终使用自条件（论文 Algorithm 1 第 8-13 行）
         k = torch.randint(1, ldt.diffusion_steps + 1, (X.shape[0],), device=device)
         noise = torch.randn_like(z_0_scaled)
         z_k = ldt.noise_schedule.q_sample(z_0_scaled, k, noise)
 
-        # Self-conditioning：eval 时始终使用
-        # 先预测一次获取初始 ẑ₀ 估计，再用于最终条件预测
         z_self_cond_init = torch.zeros_like(z_0_scaled)
         z_0_first = ldt.denoiser(z_k, X_norm, z_self_cond_init, k)
         z_0_pred = ldt.denoiser(z_k, X_norm, z_0_first, k)
 
-        # 在缩放空间中计算 MSE（与训练损失一致）
+        # 在缩放空间中计算 MSE（论文 Eq.6）
         total_loss += torch.nn.functional.mse_loss(z_0_pred, z_0_scaled).item()
 
     return {"val_loss": total_loss / len(dataloader)}
@@ -237,14 +233,13 @@ def train_stage2(
     best_val_loss = float("inf")
     patience_counter = 0
 
-    for epoch in range(1, config.diffusion.epochs + 1):
-        # 每轮重置 VN 统计量
-        vn.reset_stats()
-        for X, Y in train_loader:
-            W = torch.cat([X, Y], dim=1).to(device)
-            vn.update_stats(W)
-            break
+    # 在全量训练集上计算 VN 统计量（一次性，与 Stage 1 checkpoint 一致）
+    vn.reset_stats()
+    with torch.no_grad():
+        for X_all, Y_all in train_loader:
+            vn.update_stats(torch.cat([X_all, Y_all], dim=1).to(device))
 
+    for epoch in range(1, config.diffusion.epochs + 1):
         # 训练
         train_metrics = train_ldt_epoch(
             ldt, encoder, vn, train_loader, optimizer,

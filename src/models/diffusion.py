@@ -178,7 +178,7 @@ class LDiffusion(nn.Module):
         beta_1: float = 1e-4,
         beta_T: float = 0.1,
         p_uncond: float = 0.1,
-        self_cond_prob: float = 0.4,
+        self_cond_prob: float = 0.5,  # 论文: 50%
         dropout: float = 0.0,
     ):
         super().__init__()
@@ -209,9 +209,9 @@ class LDiffusion(nn.Module):
         )
 
     def _scale_latent(self, z: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
-        """将潜在变量缩放到单位方差以稳定扩散训练。
+        """按论文第4页: Ẑ = Z / σ̂，其中 σ̂² = (1/btm) Σ(z - μ̂)²。
 
-        Ẑ = Z / σ̂，其中 σ̂² = (1/btm) Σ(z - μ̂)²
+        将潜在变量缩放到单位方差以稳定扩散训练。
 
         Args:
             z: 潜在张量 [B, t, m]。
@@ -257,7 +257,7 @@ class LDiffusion(nn.Module):
         B, t, m = z_0.shape
         device = z_0.device
 
-        # 按论文: 缩放潜在变量 Ẑ = Z / σ̂
+        # 按论文第4页: 缩放潜在变量 Ẑ = Z / σ̂
         z_0_scaled, sigma_hat = self._scale_latent(z_0)
 
         # 1. 采样扩散步 k ~ Uniform(1..K)
@@ -274,7 +274,7 @@ class LDiffusion(nn.Module):
         history_cond = history.clone()
         history_cond[uncond_mask] = 0.0  # 将条件设为 ∅
 
-        # 5. 自条件机制（在缩放空间中操作）
+        # 5. 自条件机制（论文 Algorithm 1 第 8-13 行）
         z_self_cond = torch.zeros_like(z_0_scaled)
         use_self_cond = torch.rand(1, device=device).item() < self.self_cond_prob
 
@@ -286,12 +286,13 @@ class LDiffusion(nn.Module):
         # 6. 预测 ẑ₀（在缩放空间中）
         z_0_pred = self.denoiser(z_k, history_cond, z_self_cond, k)
 
-        # 7. 损失: MSE(z_0_scaled, ẑ₀) — x₀ 预测（缩放空间）
+        # 7. 损失: MSE(z_0_scaled, ẑ₀) — x₀ 预测（论文 Eq.6，缩放空间）
         loss = F.mse_loss(z_0_pred, z_0_scaled)
 
         metrics = {
             "loss": loss.item(),
             "k_mean": k.float().mean().item(),
+            "sigma_hat": sigma_hat.item(),
         }
 
         return loss, metrics
@@ -316,7 +317,7 @@ class LDiffusion(nn.Module):
             progress: 是否显示进度条。
 
         Returns:
-            干净的潜在变量 z₀ [B, t, m]（缩放空间）。
+            干净的潜在变量 z₀ [B, t, m]。
         """
         B, T, d = history.shape
         device = history.device
@@ -348,11 +349,10 @@ class LDiffusion(nn.Module):
             k_curr = step_indices[i]
             k_tensor = torch.full((B,), k_curr, device=device, dtype=torch.long)
 
-            # 自条件预测（论文算法 2 第 7 行）
-            z_self_cond = self.denoiser(z, history, z_self_cond, k_tensor)
-
-            # 条件 + 无条件预测 → 无分类器引导（论文 Eq.7）
+            # 论文 Algorithm 2 第 7-8 行：条件预测（自条件 + 用于 CFG）
             z_0_cond = self.denoiser(z, history, z_self_cond, k_tensor)
+
+            # 无条件预测 → 无分类器引导（论文 Eq.7）
             z_0_uncond = self.denoiser(z, empty_history, z_self_cond, k_tensor)
             z_0_guided = (1 + guidance_strength) * z_0_cond \
                 - guidance_strength * z_0_uncond
@@ -368,7 +368,7 @@ class LDiffusion(nn.Module):
             if k_curr > 1:
                 z = z + sigma * torch.randn_like(z)
 
-            # 更新自条件为当前预测
-            z_self_cond = z_0_guided
+            # 更新自条件为原始条件预测（非 CFG 输出，论文 Algorithm 2 第 7 行）
+            z_self_cond = z_0_cond
 
         return z

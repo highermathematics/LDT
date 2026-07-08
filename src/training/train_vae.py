@@ -29,7 +29,7 @@ def train_vae_epoch(
     """训练 VAE 一个 epoch，按论文对抗训练方式交替更新 G/D。"""
     vae.train()
     metrics_sum = {"rec_loss": 0.0, "adv_loss": 0.0, "kl_loss": 0.0,
-                   "disc_loss": 0.0, "gen_loss": 0.0, "r1": 0.0}
+                   "disc_loss": 0.0, "gen_loss": 0.0}
 
     pbar = tqdm(dataloader, desc="VAE 训练")
     for batch_idx, (X, Y) in enumerate(pbar):
@@ -52,24 +52,16 @@ def train_vae_epoch(
             Y_norm, y_recon, mu, logvar
         )
         gen_loss.backward()
-        torch.nn.utils.clip_grad_norm_(
-            list(vae.encoder.parameters()) + list(vae.decoder.parameters()),
-            max_norm=5.0,
-        )
         optimizer_g.step()
 
         # ============================================================
-        # 2. 训练判别器: max log D(real) + log(1 - D(fake)) + R1
+        # 2. 训练判别器: max log D(real) + log(1 - D(fake))
         # ============================================================
         optimizer_d.zero_grad()
         with torch.no_grad():
             y_recon_detached, _, _, _ = vae(Y_norm, stochastic=True)
-        disc_loss, r1_penalty = vae.discriminator_loss(
-            Y_norm.detach(), y_recon_detached,
-            r1_gamma=1.0, label_smooth=0.1,
-        )
+        disc_loss = vae.discriminator_loss(Y_norm.detach(), y_recon_detached)
         disc_loss.backward()
-        torch.nn.utils.clip_grad_norm_(vae.discriminator.parameters(), max_norm=5.0)
         optimizer_d.step()
 
         metrics_sum["rec_loss"] += rec_loss.item()
@@ -77,7 +69,6 @@ def train_vae_epoch(
         metrics_sum["kl_loss"] += kl_loss.item()
         metrics_sum["disc_loss"] += disc_loss.item()
         metrics_sum["gen_loss"] += gen_loss.item()
-        metrics_sum["r1"] += r1_penalty.item()
 
         if batch_idx % log_interval == 0:
             pbar.set_postfix(
@@ -138,7 +129,7 @@ def train_stage1(
     )
     optimizer_d = torch.optim.Adam(
         vae.discriminator.parameters(),
-        lr=config.vae.lr * config.vae.disc_lr_mult,
+        lr=config.vae.lr,
     )
 
     ckpt_dir = os.path.join(
@@ -166,7 +157,6 @@ def train_stage1(
             f"rec={train_metrics['rec_loss']:.4f} "
             f"adv={train_metrics['adv_loss']:.4f} "
             f"disc={train_metrics['disc_loss']:.4f} "
-            f"r1={train_metrics['r1']:.4f} "
             f"kl={train_metrics['kl_loss']:.6f} | "
             f"val_rec={val_metrics['val_rec']:.4f}"
         )
@@ -175,6 +165,11 @@ def train_stage1(
         if val_loss < best_val_loss:
             best_val_loss = val_loss
             patience_counter = 0
+            # 在全量训练集上重算 VN 统计量后再保存
+            vn.reset_stats()
+            with torch.no_grad():
+                for X_all, Y_all in train_loader:
+                    vn.update_stats(torch.cat([X_all, Y_all], dim=1).to(device))
             torch.save(
                 {
                     "encoder": vae.encoder.state_dict(),

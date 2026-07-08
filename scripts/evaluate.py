@@ -111,8 +111,8 @@ def main():
         X = X.to(device)
         Y = Y.to(device)
 
-        # 生成采样
-        samples = inference.predict(X, Y, progress=False)
+        # 生成采样（不使用测试集 Y 更新 VN 统计量）
+        samples = inference.predict(X, progress=False)
 
         # 计算指标
         metrics = compute_all_metrics(samples, Y)
