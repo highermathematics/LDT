@@ -12,4 +12,4 @@ vae:
 diffusion:
   diffusion_steps: 100
   embed_dim: 256
-  guidance_strength: 3.0
+  guidance_strength: 5.0   # 论文: deterministic 数据集用更大 w

@@ -31,7 +31,7 @@ class VAECConfig:
     kl_weight: float = 1e-8           # KL 散度正则化权重
     lr: float = 1e-3                  # 学习率
     epochs: int = 100                 # 最大训练轮数
-    early_stop_patience: int = 10     # 早停耐心值
+    early_stop_patience: int = 25     # 早停耐心值
 
 
 @dataclass

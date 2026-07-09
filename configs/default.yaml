@@ -14,7 +14,7 @@ vae:
   kl_weight: 1.0e-8    # 论文: 1e-8
   lr: 0.001
   epochs: 100
-  early_stop_patience: 10
+  early_stop_patience: 25
 
 diffusion:
   diffusion_steps: 100   # K in [50, 100, 200, 300]
