@@ -72,12 +72,12 @@ class VarianceUpdateNorm(nn.Module):
 
         if self.n_batches.item() == 0:
             # 第一个 batch：直接初始化
-            self.E_hat = E_new.detach().clone()
-            self.Var_hat = Var_new.detach().clone()
+            self.E_hat.copy_(E_new.detach())
+            self.Var_hat.copy_(Var_new.detach())
         else:
             # 以 1/n 权重进行 EMA 更新
-            self.E_hat = (1.0 / n) * (E_new.detach() + self.E_hat * (n - 1))
-            self.Var_hat = (1.0 / n) * (Var_new.detach() + self.Var_hat * (n - 1))
+            self.E_hat.copy_((E_new.detach() + self.E_hat * (n - 1)) / n)
+            self.Var_hat.copy_((Var_new.detach() + self.Var_hat * (n - 1)) / n)
 
         self.n_batches.fill_(n)
 

@@ -244,6 +244,7 @@ class LDiffusion(nn.Module):
         self,
         z_0: torch.Tensor,
         history: torch.Tensor,
+        sigma_hat: Optional[torch.Tensor] = None,
     ) -> Tuple[torch.Tensor, Dict[str, float]]:
         """按算法 1 执行单步训练。
 
@@ -257,8 +258,17 @@ class LDiffusion(nn.Module):
         B, t, m = z_0.shape
         device = z_0.device
 
-        # 按论文第4页: 缩放潜在变量 Ẑ = Z / σ̂
-        z_0_scaled, sigma_hat = self._scale_latent(z_0)
+        # 按论文第4页: 缩放潜在变量 Ẑ = Z / σ̂。
+        # 训练时优先使用全训练集估计的固定 σ̂，避免 batch 级尺度漂移。
+        if sigma_hat is None:
+            z_0_scaled, sigma_hat_tensor = self._scale_latent(z_0)
+        else:
+            sigma_hat_tensor = torch.as_tensor(
+                sigma_hat, device=device, dtype=z_0.dtype
+            ).clamp(min=1e-8)
+            if sigma_hat_tensor.dim() == 0:
+                sigma_hat_tensor = sigma_hat_tensor.view(1, 1, 1)
+            z_0_scaled = z_0 / sigma_hat_tensor
 
         # 1. 采样扩散步 k ~ Uniform(1..K)
         k = torch.randint(1, self.diffusion_steps + 1, (B,), device=device)
@@ -292,7 +302,7 @@ class LDiffusion(nn.Module):
         metrics = {
             "loss": loss.item(),
             "k_mean": k.float().mean().item(),
-            "sigma_hat": sigma_hat.item(),
+            "sigma_hat": sigma_hat_tensor.detach().mean().item(),
         }
 
         return loss, metrics
@@ -327,9 +337,16 @@ class LDiffusion(nn.Module):
 
         if num_steps is None:
             num_steps = K
+        num_steps = max(1, min(int(num_steps), K))
 
         # 均匀间隔的步索引（降序）
-        step_indices = torch.linspace(K, 1, num_steps, device=device).long()
+        step_indices = torch.linspace(K, 1, num_steps, device=device).round().long()
+        step_indices = torch.unique_consecutive(step_indices)
+        if step_indices[-1].item() != 1:
+            step_indices = torch.cat([
+                step_indices,
+                torch.ones(1, device=device, dtype=torch.long),
+            ])
 
         # 1. z_K ~ N(0, I)
         z = torch.randn(B, t, m, device=device)
@@ -346,7 +363,7 @@ class LDiffusion(nn.Module):
             iterator = tqdm(iterator, desc="采样")
 
         for i in iterator:
-            k_curr = step_indices[i]
+            k_curr = int(step_indices[i].item())
             k_tensor = torch.full((B,), k_curr, device=device, dtype=torch.long)
 
             # 论文 Algorithm 2 第 7 行：空历史自条件（"盲猜"）
@@ -360,14 +377,21 @@ class LDiffusion(nn.Module):
             z_0_guided = (1 + guidance_strength) * z_0_cond \
                 - guidance_strength * z_0_uncond
 
-            # DDPM 后验: z_{k-1} = c1·z_k + c2·x̂₀ + σ·ε（论文 Eq.10）
-            c1, c2, sigma = self.noise_schedule.get_ddim_coeffs(k_tensor)
-            c1 = c1.view(-1, 1, 1)
-            c2 = c2.view(-1, 1, 1)
-            sigma = sigma.view(-1, 1, 1)
+            # Deterministic DDIM update for arbitrary skipped timesteps.
+            alpha_curr = self.noise_schedule.get_alpha_bar(k_tensor).view(-1, 1, 1)
+            if i + 1 < len(step_indices):
+                k_next = int(step_indices[i + 1].item())
+                k_next_tensor = torch.full(
+                    (B,), k_next, device=device, dtype=torch.long
+                )
+                alpha_prev = self.noise_schedule.get_alpha_bar(k_next_tensor).view(-1, 1, 1)
+            else:
+                alpha_prev = torch.ones_like(alpha_curr)
 
-            z = c1 * z + c2 * z_0_guided
-            if k_curr > 1:
-                z = z + sigma * torch.randn_like(z)
+            eps_pred = (z - torch.sqrt(alpha_curr) * z_0_guided) \
+                / torch.sqrt((1.0 - alpha_curr).clamp(min=1e-8))
+            z = torch.sqrt(alpha_prev) * z_0_guided \
+                + torch.sqrt((1.0 - alpha_prev).clamp(min=0.0)) * eps_pred
+            z_self_cond = z_0_guided.detach()
 
         return z

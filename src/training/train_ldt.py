@@ -17,6 +17,46 @@ from src.models.autoencoder import Encoder
 from src.models.diffusion import LDiffusion
 
 
+@torch.no_grad()
+def fit_vn_stats(
+    vn: VarianceUpdateNorm,
+    dataloader: DataLoader,
+    device: torch.device,
+) -> None:
+    """Fit VN statistics once on the training set and keep them fixed."""
+    vn.reset_stats()
+    for X, Y in dataloader:
+        W = torch.cat([X, Y], dim=1).to(device)
+        vn.update_stats(W)
+
+
+@torch.no_grad()
+def estimate_latent_sigma(
+    encoder: Encoder,
+    vn: VarianceUpdateNorm,
+    dataloader: DataLoader,
+    device: torch.device,
+) -> torch.Tensor:
+    """Estimate the global latent standard deviation used by LDT."""
+    encoder.eval()
+    total = 0
+    sum_z = torch.zeros((), device=device)
+    sum_z2 = torch.zeros((), device=device)
+    E_hat, Var_hat = vn.get_stats()
+
+    for _, Y in dataloader:
+        Y = Y.to(device)
+        Y_norm = vn.normalize(Y, E_hat, Var_hat)
+        z = encoder.encode(Y_norm)
+        total += z.numel()
+        sum_z += z.sum()
+        sum_z2 += (z * z).sum()
+
+    mean = sum_z / max(total, 1)
+    var = (sum_z2 / max(total, 1) - mean * mean).clamp(min=1e-8)
+    return torch.sqrt(var)
+
+
 def train_ldt_epoch(
     ldt: LDiffusion,
     encoder: Encoder,
@@ -26,6 +66,7 @@ def train_ldt_epoch(
     device: torch.device,
     lookback: int,
     horizon: int,
+    latent_sigma: torch.Tensor,
     log_interval: int = 10,
 ) -> Dict[str, float]:
     """训练 LDT 一个 epoch。
@@ -56,10 +97,6 @@ def train_ldt_epoch(
         X = X.to(device)  # [B, T, d]
         Y = Y.to(device)  # [B, t, d]
 
-        # 更新 VN 统计量
-        W = torch.cat([X, Y], dim=1)
-        vn.update_stats(W.detach())
-
         E_hat, Var_hat = vn.get_stats()
 
         # 归一化目标并编码到潜在空间（论文 Algorithm 1 第 4 行）
@@ -75,7 +112,7 @@ def train_ldt_epoch(
 
         # 训练步
         optimizer.zero_grad()
-        loss, metrics = ldt.training_step(z_0, X_norm)
+        loss, metrics = ldt.training_step(z_0, X_norm, sigma_hat=latent_sigma)
         loss.backward()
         optimizer.step()
 
@@ -99,6 +136,7 @@ def validate_ldt(
     device: torch.device,
     lookback: int,
     horizon: int,
+    latent_sigma: torch.Tensor,
 ) -> Dict[str, float]:
     """在验证集上验证 LDT。
 
@@ -135,8 +173,8 @@ def validate_ldt(
             E_hat, Var_hat,
         )[:, :lookback, :]
 
-        # 按论文第4页: 缩放潜在变量
-        z_0_scaled, _ = ldt._scale_latent(z_0)
+        # 使用训练集全局潜变量尺度，保持训练/验证/推理一致
+        z_0_scaled = z_0 / latent_sigma.clamp(min=1e-8)
 
         # 验证：始终使用自条件（论文 Algorithm 1 第 8-13 行）
         k = torch.randint(1, ldt.diffusion_steps + 1, (X.shape[0],), device=device)
@@ -188,6 +226,7 @@ def train_stage2(
 
     # 创建冻结的编码器
     vae_cfg = ckpt["vae_config"]
+    d_latent = vae_cfg["d_latent"]
     encoder = Encoder(
         d_input=vae_cfg["d_data"],
         d_latent=vae_cfg["d_latent"],
@@ -205,6 +244,8 @@ def train_stage2(
     if "vn" in ckpt:
         vn.load_state_dict(ckpt["vn"], strict=False)
     vn.eval()
+    for param in vn.parameters():
+        param.requires_grad = False
 
     # 创建 LDT 模型
     ldt = LDiffusion(
@@ -233,22 +274,21 @@ def train_stage2(
     best_val_loss = float("inf")
     patience_counter = 0
 
-    # 在全量训练集上计算 VN 统计量（一次性，与 Stage 1 checkpoint 一致）
-    vn.reset_stats()
-    with torch.no_grad():
-        for X_all, Y_all in train_loader:
-            vn.update_stats(torch.cat([X_all, Y_all], dim=1).to(device))
+    # 在全量训练集上固定 VN 统计量与潜变量尺度
+    fit_vn_stats(vn, train_loader, device)
+    latent_sigma = estimate_latent_sigma(encoder, vn, train_loader, device)
+    print(f"  潜变量全局 sigma_hat: {latent_sigma.item():.6f}")
 
     for epoch in range(1, config.diffusion.epochs + 1):
         # 训练
         train_metrics = train_ldt_epoch(
             ldt, encoder, vn, train_loader, optimizer,
-            device, lookback, horizon, config.training.log_interval,
+            device, lookback, horizon, latent_sigma, config.training.log_interval,
         )
 
         # 验证
         val_metrics = validate_ldt(
-            ldt, encoder, vn, val_loader, device, lookback, horizon,
+            ldt, encoder, vn, val_loader, device, lookback, horizon, latent_sigma,
         )
 
         print(
@@ -277,8 +317,10 @@ def train_stage2(
                         "diffusion_steps": config.diffusion.diffusion_steps,
                         "beta_1": config.diffusion.beta_1,
                         "beta_T": config.diffusion.beta_T,
+                        "p_uncond": config.diffusion.p_uncond,
+                        "self_cond_prob": config.diffusion.self_cond_prob,
                     },
-                    "sigma_hat": train_metrics["sigma_hat"],  # 推理时反缩放用
+                    "sigma_hat": latent_sigma.detach().cpu().item(),  # 推理时反缩放用
                     "epoch": epoch,
                     "val_loss": val_loss,
                 },

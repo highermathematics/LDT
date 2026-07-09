@@ -42,7 +42,7 @@ class AdaLNModulation(nn.Module):
         nn.init.zeros_(self.proj.bias[d_model:])   # shift = 0
 
     def forward(self, t_emb: torch.Tensor) -> tuple:
-        shift, scale = self.proj(t_emb).chunk(2, dim=-1)
+        scale, shift = self.proj(t_emb).chunk(2, dim=-1)
         return shift, scale
 
 
@@ -286,8 +286,9 @@ class DenoisingTransformer(nn.Module):
         h_hist = h_hist + pos_all[:, :T, :]
         h_latent = h_latent + pos_all[:, T:, :]
 
-        time_idx_hist = torch.arange(T, device=device).float().view(1, T, 1)
-        time_idx_latent = torch.arange(T, T + t, device=device).float().view(1, t, 1)
+        time_scale = max(T + t - 1, 1)
+        time_idx_hist = torch.arange(T, device=device).float().view(1, T, 1) / time_scale
+        time_idx_latent = torch.arange(T, T + t, device=device).float().view(1, t, 1) / time_scale
         h_hist = h_hist + self.time_mlp(time_idx_hist)
         h_latent = h_latent + self.time_mlp(time_idx_latent)
 

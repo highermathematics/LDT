@@ -46,8 +46,8 @@ def main():
         help="第二阶段检查点路径（.pt 文件）。",
     )
     parser.add_argument(
-        "--num_samples", type=int, default=20,
-        help="经验 CRPS 的采样数（默认: 20，论文用 100）。",
+        "--num_samples", type=int, default=100,
+        help="经验 CRPS 的采样数（默认: 100）。",
     )
     parser.add_argument(
         "--guidance_strength", type=float, default=None,
@@ -98,6 +98,7 @@ def main():
         lookback_window=config.dataset.lookback_window,
         batch_size=config.training.batch_size,
         num_workers=config.training.num_workers,
+        force_dimension=inference.decoder.d_output,
     )
     print(f"  测试批次数: {len(test_loader)}")
     print(f"  维度: {dimension}")
@@ -126,14 +127,23 @@ def main():
             break
 
     # 汇总结果
-    crps_vals = torch.tensor([m["crps_sum_mean"] for m in all_metrics])
-    mse_vals = torch.tensor([m["mse_mean"] for m in all_metrics])
+    weights = torch.tensor([m["num_series"] for m in all_metrics], dtype=torch.float64)
+    crps_vals = torch.tensor([m["crps_sum_mean"] for m in all_metrics], dtype=torch.float64)
+    mse_vals = torch.tensor([m["mse_mean"] for m in all_metrics], dtype=torch.float64)
+    crps_dim_vals = torch.tensor([m["crps_dim_mean"] for m in all_metrics], dtype=torch.float64)
+
+    crps_mean = (crps_vals * weights).sum() / weights.sum()
+    mse_mean = (mse_vals * weights).sum() / weights.sum()
+    crps_dim_mean = (crps_dim_vals * weights).sum() / weights.sum()
+    crps_std = torch.sqrt(((crps_vals - crps_mean) ** 2 * weights).sum() / weights.sum())
+    mse_std = torch.sqrt(((mse_vals - mse_mean) ** 2 * weights).sum() / weights.sum())
 
     print("\n" + "=" * 50)
     print("最终结果")
     print("=" * 50)
-    print(f"CRPS-sum: {crps_vals.mean():.4f} ± {crps_vals.std():.4f}")
-    print(f"MSE:      {mse_vals.mean():.6e} ± {mse_vals.std():.6e}")
+    print(f"CRPS-sum: {crps_mean:.4f} ± {crps_std:.4f}")
+    print(f"CRPS-dim: {crps_dim_mean:.4f}  (诊断用逐维平均)")
+    print(f"MSE:      {mse_mean:.6e} ± {mse_std:.6e}")
 
     # 打印论文表 1 参考值
     paper_results = {

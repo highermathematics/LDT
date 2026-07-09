@@ -17,6 +17,19 @@ from src.data.normalization import VarianceUpdateNorm
 from src.models.autoencoder import VAE
 
 
+@torch.no_grad()
+def fit_vn_stats(
+    vn: VarianceUpdateNorm,
+    dataloader: DataLoader,
+    device: torch.device,
+) -> None:
+    """Fit VN statistics once on the training set and keep them fixed."""
+    vn.reset_stats()
+    for X, Y in dataloader:
+        W = torch.cat([X, Y], dim=1).to(device)
+        vn.update_stats(W)
+
+
 def train_vae_epoch(
     vae: VAE,
     vn: VarianceUpdateNorm,
@@ -36,15 +49,11 @@ def train_vae_epoch(
         X = X.to(device)
         Y = Y.to(device)
 
-        # 拼接 [X, Y] 更新 VN 统计量
-        W = torch.cat([X, Y], dim=1)
-        vn.update_stats(W.detach())
-
         E_hat, Var_hat = vn.get_stats()
         Y_norm = vn.normalize(Y, E_hat, Var_hat)
 
         # ============================================================
-        # 1. 训练生成器 (编码器 + 解码器): min L_rec - L_adv + L_reg
+        # 1. 训练生成器 (编码器 + 解码器)
         # ============================================================
         optimizer_g.zero_grad()
         y_recon, z, mu, logvar = vae(Y_norm, stochastic=True)
@@ -122,6 +131,8 @@ def train_stage1(
     ).to(device)
 
     vn = VarianceUpdateNorm(num_features=d_data).to(device)
+    for param in vn.parameters():
+        param.requires_grad = False
 
     optimizer_g = torch.optim.Adam(
         list(vae.encoder.parameters()) + list(vae.decoder.parameters()),
@@ -140,12 +151,9 @@ def train_stage1(
     best_val_loss = float("inf")
     patience_counter = 0
 
-    for epoch in range(1, config.vae.epochs + 1):
-        vn.reset_stats()
-        for X, Y in train_loader:
-            vn.update_stats(torch.cat([X, Y], dim=1).to(device))
-            break
+    fit_vn_stats(vn, train_loader, device)
 
+    for epoch in range(1, config.vae.epochs + 1):
         train_metrics = train_vae_epoch(
             vae, vn, train_loader, optimizer_g, optimizer_d,
             device, config.training.log_interval,
@@ -165,11 +173,6 @@ def train_stage1(
         if val_loss < best_val_loss:
             best_val_loss = val_loss
             patience_counter = 0
-            # 在全量训练集上重算 VN 统计量后再保存
-            vn.reset_stats()
-            with torch.no_grad():
-                for X_all, Y_all in train_loader:
-                    vn.update_stats(torch.cat([X_all, Y_all], dim=1).to(device))
             torch.save(
                 {
                     "encoder": vae.encoder.state_dict(),

@@ -30,7 +30,7 @@ diffusion:
   lr: 0.001               # 论文: Adam lr=1e-3
   epochs: 300
   early_stop_patience: 20
-  ddim_steps: 25
+  ddim_steps: 100
 
 training:
   batch_size: 64

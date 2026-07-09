@@ -141,7 +141,7 @@ def main():
             ret = run_cmd(
                 f'python scripts/evaluate.py --config {config_path} '
                 f'--stage1_ckpt {stage1_ckpt} --stage2_ckpt {stage2_ckpt} '
-                f'--num_samples 50{device_flag}',
+                f'--num_samples 100{device_flag}',
                 f"{name} - 测试集评估",
             )
 
@@ -149,7 +149,7 @@ def main():
             eval_cmd = (
                 f'python scripts/evaluate.py --config {config_path} '
                 f'--stage1_ckpt {stage1_ckpt} --stage2_ckpt {stage2_ckpt} '
-                f'--num_samples 50 --max_batches 200{device_flag}'
+                f'--num_samples 100 --max_batches 200{device_flag}'
             )
             eval_result = subprocess.run(
                 eval_cmd, shell=True, cwd=PROJECT_ROOT,

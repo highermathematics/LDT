@@ -150,6 +150,8 @@ def load_model_from_checkpoints(
         n_layers=ldt_cfg["n_layers"], history_len=ldt_cfg["history_len"],
         pred_len=ldt_cfg["pred_len"], diffusion_steps=ldt_cfg["diffusion_steps"],
         beta_1=ldt_cfg["beta_1"], beta_T=ldt_cfg["beta_T"],
+        p_uncond=ldt_cfg.get("p_uncond", 0.1),
+        self_cond_prob=ldt_cfg.get("self_cond_prob", 0.5),
     ).to(device)
     ldt.load_state_dict(ckpt2["ldt_state_dict"])
     ldt.eval()

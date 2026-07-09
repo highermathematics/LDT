@@ -60,3 +60,6 @@ logs/
 *.pt
 
 images/
+
+CLAUDE.md
+PROMPT.md

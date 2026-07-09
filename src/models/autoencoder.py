@@ -421,7 +421,7 @@ class VAE(nn.Module):
         # 重建损失（MSE）
         rec_loss = F.mse_loss(y_recon, y_real)
 
-        # 对抗损失：最大化判别器的错误
+        # 对抗损失：让重建样本被判别器识别为真实样本
         disc_fake = self.discriminator(y_recon)
         adv_loss = F.binary_cross_entropy_with_logits(
             disc_fake, torch.ones_like(disc_fake)
@@ -430,8 +430,8 @@ class VAE(nn.Module):
         # KL 正则化
         kl = self.kl_loss(z_mu, z_logvar)
 
-        # 生成器总损失: L_rec - L_adv + L_reg
-        total = rec_loss - adv_loss + kl
+        # 生成器总损失：重建 + 对抗 + KL
+        total = rec_loss + adv_loss + kl
 
         return total, rec_loss, kl, adv_loss
 
