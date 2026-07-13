@@ -24,7 +24,7 @@ class DatasetConfig:
 class VAECConfig:
     """第一阶段 VAE 配置。"""
 
-    latent_dim: int = 32              # m: 潜在维度
+    latent_dim: int = 8               # m: 潜在维度（论文: f=d/m≈2m ⇒ m≈√(d/2)）
     embed_dim: int = 128              # Transformer 嵌入维度
     num_layers: int = 3               # 编码器/解码器 Transformer 层数
     num_heads: int = 4                # 注意力头数
@@ -46,7 +46,7 @@ class DiffusionConfig:
     num_layers: int = 3               # Transformer 编码器/解码器层数
     num_heads: int = 8                # 注意力头数
     p_uncond: float = 0.1             # 无条件训练概率（CFG）
-    self_cond_prob: float = 0.5       # 自条件训练概率（论文: 50%）
+    self_cond_prob: float = 0.4       # 自条件触发概率 40%（论文正文：60% 设为 0）
     guidance_strength: float = 3.0    # w: 无分类器引导强度
     lr: float = 1e-3                  # 学习率
     epochs: int = 200                 # 最大训练轮数

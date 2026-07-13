@@ -6,10 +6,10 @@ dataset:
   dimension: 963
 
 vae:
-  latent_dim: 128
-  embed_dim: 256
+  latent_dim: 22       # √(d/2) = √(481.5) ≈ 22, f = 963/22 ≈ 44 = 2m
+  embed_dim: 128
 
 diffusion:
   diffusion_steps: 100
   embed_dim: 256
-  guidance_strength: 3.0
+  guidance_strength: 7.0

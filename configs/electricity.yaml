@@ -6,8 +6,8 @@ dataset:
   dimension: 370
 
 vae:
-  latent_dim: 64
-  embed_dim: 256
+  latent_dim: 14       # √(d/2) = √(185) ≈ 14, f = 370/14 ≈ 26 ≈ 2m = 28
+  embed_dim: 128
 
 diffusion:
   diffusion_steps: 100

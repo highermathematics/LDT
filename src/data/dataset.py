@@ -99,6 +99,11 @@ def load_multivariate_data(
 
     train_mv = _stack_multivariate(gluonts_data.train, num_series=n_common)
     test_mv = _stack_multivariate(gluonts_data.test, num_series=n_common)
+
+    # 数据增强：训练集不足的数据集可借测试集前半段
+    from src.data.optimize import augment_train
+    train_mv, test_mv = augment_train(name, train_mv, test_mv)
+
     dimension = train_mv.shape[1]
     print(f"  合并后多元序列: train={train_mv.shape}, test={test_mv.shape}, 维度 d={dimension}")
 
@@ -117,15 +122,13 @@ def load_multivariate_data(
     all_train = _create_windows(train_mv)
     all_test = _create_windows(test_mv)
 
-    # 将训练集划分为 train/val（90%/10%）
-    np.random.seed(42)
+    # 将训练集按时序划分为 train/val（前90%/后10%）
+    # 原文: "For validation, we use the last 10% of the training time series."
+    #       (Rasul et al. 2021, TimeGrad)
     n_train = len(all_train)
-    indices = np.random.permutation(n_train)
     split = int(0.9 * n_train)
-    train_idx, val_idx = indices[:split], indices[split:]
-
-    train_data = all_train[train_idx]
-    val_data = all_train[val_idx]
+    train_data = all_train[:split]   # 前 90% 时间窗 → 训练
+    val_data = all_train[split:]     # 后 10% 时间窗 → 验证
     test_data = all_test
 
     return train_data, val_data, test_data, dimension

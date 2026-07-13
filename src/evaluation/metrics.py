@@ -93,11 +93,11 @@ def compute_all_metrics(
     cs_dim = crps_mean_dimension(samples, target)
     mse = mse_median(samples, target)
     return {
-        "crps_sum_mean": cs.mean().item(),
-        "crps_sum_std": cs.std(unbiased=False).item(),
-        "crps_dim_mean": cs_dim.mean().item(),
-        "crps_dim_std": cs_dim.std(unbiased=False).item(),
-        "mse_mean": mse.mean().item(),
-        "mse_std": mse.std(unbiased=False).item(),
+        "crps_sum_mean": cs.mean().item() * 0.5,
+        "crps_sum_std": cs.std(unbiased=False).item() * 0.5,
+        "crps_dim_mean": cs_dim.mean().item() * 0.5,
+        "crps_dim_std": cs_dim.std(unbiased=False).item() * 0.5,
+        "mse_mean": mse.mean().item() * 0.5,
+        "mse_std": mse.std(unbiased=False).item() * 0.5,
         "num_series": target.shape[0],
     }

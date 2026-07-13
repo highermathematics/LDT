@@ -161,7 +161,7 @@ class LDiffusion(nn.Module):
         beta_1: 起始噪声水平。
         beta_T: 终止噪声水平。
         p_uncond: 无条件训练概率（CFG）。
-        self_cond_prob: 训练时使用自条件的概率。
+        self_cond_prob: 训练时使用自条件的概率（论文正文：60% 设为 0，即 40% 触发）。
         dropout: Transformer 中的 dropout。
     """
 
@@ -178,7 +178,7 @@ class LDiffusion(nn.Module):
         beta_1: float = 1e-4,
         beta_T: float = 0.1,
         p_uncond: float = 0.1,
-        self_cond_prob: float = 0.5,  # 论文: 50%
+        self_cond_prob: float = 0.4,  # 自条件触发概率 40%（论文正文：60% 设为 0）
         dropout: float = 0.0,
     ):
         super().__init__()
@@ -354,8 +354,8 @@ class LDiffusion(nn.Module):
         # 2. ẑ_0_prev = 0（自条件初始化）
         z_self_cond = torch.zeros(B, t, m, device=device)
 
-        # 无条件模型的空条件
-        empty_history = torch.zeros(B, T, d, device=device)
+        # 无条件模型的空条件（必须与 history 在同一空间：训练时用的是 VN 归一化后的 0）
+        empty_history = torch.zeros_like(history)
 
         iterator = range(len(step_indices))
         if progress:
@@ -392,6 +392,5 @@ class LDiffusion(nn.Module):
                 / torch.sqrt((1.0 - alpha_curr).clamp(min=1e-8))
             z = torch.sqrt(alpha_prev) * z_0_guided \
                 + torch.sqrt((1.0 - alpha_prev).clamp(min=0.0)) * eps_pred
-            z_self_cond = z_0_guided.detach()
 
         return z

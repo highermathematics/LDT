@@ -107,12 +107,12 @@ class DiffusionStepEmbedding(nn.Module):
         pe[:, 1::2] = torch.cos(position * div_term)
         self.register_buffer("pe", pe)
 
-        # 投影到 adaLN 缩放/偏移: n → （用于 γ 和 β）
-        self.mlp = nn.Sequential(
-            nn.Linear(n, n),
-            nn.GELU(),
-            nn.Linear(n, n),
-        )
+        # 投影到 adaLN 缩放/偏移（论文仅用正弦编码，不加 MLP）
+        # self.mlp = nn.Sequential(
+        #     nn.Linear(n, n),
+        #     nn.GELU(),
+        #     nn.Linear(n, n),
+        # )
 
     def forward(self, k: torch.Tensor) -> torch.Tensor:
         """获取扩散步嵌入。
@@ -130,4 +130,5 @@ class DiffusionStepEmbedding(nn.Module):
         # k 是 1 起始的（1..K），转换为 0 起始索引（0..K-1）
         k = (k - 1).long().clamp(0, self.max_steps - 1)
         emb = self.pe[k]  # [B, n]
-        return self.mlp(emb)
+        return emb  # 论文：直接返回正弦嵌入
+        # return self.mlp(emb)

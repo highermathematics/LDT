@@ -221,22 +221,26 @@ class DenoisingTransformer(nn.Module):
             nn.GELU(),
             nn.Linear(d_model, d_model),
         )
-        self.latent_proj = nn.Sequential(
-            nn.Linear(2 * d_latent, d_model),
+        # z_k 嵌入投影（2 层 MLP）
+        self.z_proj = nn.Sequential(
+            nn.Linear(d_latent, d_model),
             nn.GELU(),
             nn.Linear(d_model, d_model),
         )
+        # 自条件 GLU 门控：value ⊙ σ(gate) + 后投影
+        self.self_cond_val = nn.Linear(d_latent, d_model)
+        self.self_cond_gate = nn.Linear(d_latent, d_model)
+        self.self_cond_post = nn.Linear(d_model, d_model)
 
         # 位置嵌入
         self.pos_emb = PositionalEmbedding(
             max_len=history_len + pred_len, d_model=d_model
         )
 
-        # 时间嵌入
+        # 时间嵌入（论文：single MLP layer）
         self.time_mlp = nn.Sequential(
             nn.Linear(1, d_model),
             nn.GELU(),
-            nn.Linear(d_model, d_model),
         )
 
         # 扩散步嵌入 → adaLN 条件
@@ -278,8 +282,14 @@ class DenoisingTransformer(nn.Module):
 
         # 1. 投影
         h_hist = self.history_proj(history)                      # [B, T, d_model]
-        z_input = torch.cat([z_k, z_self_cond], dim=-1)          # [B, t, 2m]
-        h_latent = self.latent_proj(z_input)                      # [B, t, d_model]
+
+        # z_k 嵌入 + 自条件 GLU 门控
+        z_emb = self.z_proj(z_k)                                 # [B, t, d_model]
+        sc_val = self.self_cond_val(z_self_cond)                 # [B, t, d_model]
+        sc_gate = torch.sigmoid(self.self_cond_gate(z_self_cond))  # [B, t, d_model]
+        sc_gated = sc_val * sc_gate                              # GLU: value ⊙ σ(gate)
+        sc_out = self.self_cond_post(sc_gated)                   # [B, t, d_model]
+        h_latent = z_emb + sc_out                                # [B, t, d_model]
 
         # 2. 位置 + 时间嵌入
         pos_all = self.pos_emb(T + t)                             # [1, T+t, d_model]
