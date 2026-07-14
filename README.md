@@ -206,7 +206,7 @@ python scripts/run_all.py --skip_eval
 
 ### 1. 下载原始数据
 
-将 [ESA Anomaly Dataset](https://zenodo.org/records/1403946) 下载解压到：
+将 [ESA Anomaly Dataset](https://pan.baidu.com/s/1BT3A7V216xpGhLQcKL29hg?pwd=u7ib) 下载解压到：
 
 ```
 datasets/ESA Anomaly Dataset/
@@ -308,10 +308,9 @@ LDT/
 │   ├── preprocess_esa.py       # ESA 卫星数据预处理
 │   ├── debug_synthetic.py      # 诊断：随机噪声过拟合
 │   └── debug_overfit.py        # 诊断：单 batch 过拟合
-├── checkpoints/                # 模型权重
+├── datasets/                   # 数据集存放位置
 ├── logs/                       # 训练日志（自动生成）
-├── PROMPT.md                   # 完整复现规格说明
-└── CLAUDE.md                   # 编码规范
+└── checkpoints/                # 模型存放位置
 ```
 
 ---

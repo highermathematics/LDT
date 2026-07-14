@@ -12,7 +12,7 @@ vae:
   num_layers: 3
   num_heads: 4
   kl_weight: 1.0e-8
-  lr: 0.0005       # WGAN-GP 建议用更低学习率
+  lr: 0.0005
   epochs: 300
   early_stop_patience: 25
 
