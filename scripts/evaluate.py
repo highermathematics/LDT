@@ -104,9 +104,9 @@ def main():
     print(f"  维度: {dimension}")
 
     # 评估
-    print(f"\n正在评估（N={args.num_samples} 个采样，共 {len(test_loader)} 批次）...")
-    all_metrics = []
     total = min(args.max_batches, len(test_loader)) if args.max_batches else len(test_loader)
+    print(f"\n正在评估（N={args.num_samples} 个采样，共 {total}/{len(test_loader)} 批次）...")
+    all_metrics = []
 
     for batch_idx, (X, Y) in enumerate(test_loader):
         X = X.to(device)
@@ -116,7 +116,8 @@ def main():
         samples = inference.predict(X, progress=False)
 
         # 计算指标
-        metrics = compute_all_metrics(samples, Y)
+        metrics = compute_all_metrics(
+            samples, Y, eval_scale=config.diffusion.eval_scale)
         all_metrics.append(metrics)
 
         # 每 10 批打印一次进度

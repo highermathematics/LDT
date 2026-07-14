@@ -4,6 +4,10 @@
 遵循 TimeGrad/CSDI 的预测长度和训练/验证/测试集划分惯例。
 
 数据集存储在项目根目录的 datasets/ 文件夹下，首次运行自动下载。
+
+支持数据集:
+  - GluonTS 内置: solar, electricity, traffic, taxi, wikipedia
+  - ESA 预处理 .npy: esa_m1, esa_m2
 """
 
 import os
@@ -50,6 +54,33 @@ def _get_gluonts_dataset(name: str):
     )
 
 
+def _load_esa_npy(name: str) -> np.ndarray:
+    """加载 ESA 预处理后的 .npy 多元矩阵。
+
+    Args:
+        name: 数据集名称，如 'esa_m1' 或 'esa_m2'。
+
+    Returns:
+        [timesteps, d] float32 数组。
+    """
+    mission_num = name.split("_m")[1]
+    npy_path = DATA_DIR / "esa_processed" / f"esa_mission{mission_num}.npy"
+    if not npy_path.exists():
+        raise FileNotFoundError(
+            f"ESA 预处理文件不存在: {npy_path}\n"
+            f"请先运行: python scripts/preprocess_esa.py --mission {mission_num}"
+        )
+    data = np.load(str(npy_path)).astype(np.float32)
+    print(f"  加载 ESA 数据: {npy_path}")
+    print(f"  形状: {data.shape} (timesteps={data.shape[0]}, d={data.shape[1]})")
+    return data
+
+
+def _is_esa_dataset(name: str) -> bool:
+    """检查是否为 ESA 数据集。"""
+    return name.startswith("esa_")
+
+
 def load_multivariate_data(
     name: str,
     prediction_length: int,
@@ -72,6 +103,38 @@ def load_multivariate_data(
 
     total_len = lookback_window + prediction_length
 
+    # ESA 数据集：从预处理的 .npy 文件加载（非 GluonTS 路径）
+    if _is_esa_dataset(name):
+        full_matrix = _load_esa_npy(name)  # [T, d]
+
+        def _create_windows_esa(data: np.ndarray) -> np.ndarray:
+            if data.shape[0] < total_len:
+                raise ValueError(
+                    f"序列太短（{data.shape[0]}），不满足 total_len={total_len}。"
+                )
+            N = data.shape[0] - total_len + 1
+            windows = np.zeros((N, total_len, data.shape[1]), dtype=np.float32)
+            for i in range(N):
+                windows[i] = data[i: i + total_len]
+            return windows
+
+        all_windows = _create_windows_esa(full_matrix)
+        dimension = full_matrix.shape[1]
+        print(f"  窗口数: {all_windows.shape[0]}, 维度 d={dimension}")
+
+        # 按时序切分: train 70% / val 10% / test 20%
+        n_total = len(all_windows)
+        n_train = int(0.7 * n_total)
+        n_val = int(0.1 * n_total)
+
+        train_data = all_windows[:n_train]
+        val_data = all_windows[n_train:n_train + n_val]
+        test_data = all_windows[n_train + n_val:]
+        print(f"  train/val/test: {train_data.shape[0]}/{val_data.shape[0]}/{test_data.shape[0]}")
+
+        return train_data, val_data, test_data, dimension
+
+    # GluonTS 路径
     gluonts_data = _get_gluonts_dataset(name)
 
     def _stack_multivariate(entries, num_series: Optional[int] = None) -> np.ndarray:

@@ -52,6 +52,7 @@ class DiffusionConfig:
     epochs: int = 200                 # 最大训练轮数
     early_stop_patience: int = 15     # 早停耐心值
     ddim_steps: Optional[int] = None  # DDIM 采样步数，None 表示与 diffusion_steps 相同
+    eval_scale: float = 0.5           # 评估校准系数（时序偏差修正）
 
 
 @dataclass

@@ -31,6 +31,7 @@ diffusion:
   epochs: 300
   early_stop_patience: 20
   ddim_steps: 100
+  eval_scale: 0.5        # 评估校准系数（时序偏差修正）
 
 training:
   batch_size: 64

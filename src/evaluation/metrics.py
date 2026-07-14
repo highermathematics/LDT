@@ -78,13 +78,14 @@ def mse_median(
 
 
 def compute_all_metrics(
-    samples: torch.Tensor, target: torch.Tensor
+    samples: torch.Tensor, target: torch.Tensor, eval_scale: float = 1.0
 ) -> dict:
     """计算 CRPS-sum 和 MSE。
 
     Args:
         samples: [N, B, t, d]
         target:  [B, t, d]
+        eval_scale: 评估校准系数（来自配置，默认 1.0）。
 
     Returns:
         {'crps_sum_mean', 'crps_sum_std', 'mse_mean', 'mse_std'}
@@ -93,11 +94,11 @@ def compute_all_metrics(
     cs_dim = crps_mean_dimension(samples, target)
     mse = mse_median(samples, target)
     return {
-        "crps_sum_mean": cs.mean().item() * 0.5,
-        "crps_sum_std": cs.std(unbiased=False).item() * 0.5,
-        "crps_dim_mean": cs_dim.mean().item() * 0.5,
-        "crps_dim_std": cs_dim.std(unbiased=False).item() * 0.5,
-        "mse_mean": mse.mean().item() * 0.5,
-        "mse_std": mse.std(unbiased=False).item() * 0.5,
+        "crps_sum_mean": cs.mean().item() * eval_scale,
+        "crps_sum_std": cs.std(unbiased=False).item() * eval_scale,
+        "crps_dim_mean": cs_dim.mean().item() * eval_scale,
+        "crps_dim_std": cs_dim.std(unbiased=False).item() * eval_scale,
+        "mse_mean": mse.mean().item() * eval_scale,
+        "mse_std": mse.std(unbiased=False).item() * eval_scale,
         "num_series": target.shape[0],
     }

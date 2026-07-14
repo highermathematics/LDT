@@ -1,0 +1,42 @@
+# LDT Configuration — ESA Mission 1
+# 卫星遥测数据: 76 通道, 15分钟采样重采样为1小时, 2000–2013
+
+dataset:
+  name: esa_m1
+  prediction_length: 24
+  lookback_window: 96
+
+vae:
+  latent_dim: 6        # m: √(76/2)≈6.2, f=76/6≈12.7≥2m=12 ✓
+  embed_dim: 64
+  num_layers: 3
+  num_heads: 4
+  kl_weight: 1.0e-8
+  lr: 0.001
+  epochs: 300
+  early_stop_patience: 25
+
+diffusion:
+  diffusion_steps: 100
+  beta_1: 0.0001
+  beta_T: 0.1
+  noise_schedule: sqrt
+  embed_dim: 128
+  num_layers: 3
+  num_heads: 8
+  p_uncond: 0.1
+  self_cond_prob: 0.4
+  guidance_strength: 3.0
+  lr: 0.001
+  epochs: 300
+  early_stop_patience: 20
+  ddim_steps: 100
+  eval_scale: 0.5
+
+training:
+  batch_size: 64
+  num_workers: 4
+  seed: 42
+  device: cuda
+  checkpoint_dir: checkpoints
+  log_interval: 10
