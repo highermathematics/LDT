@@ -224,9 +224,10 @@ class Decoder(nn.Module):
 # ---------------------------------------------------------------------------
 
 class Discriminator(nn.Module):
-    """基于时间块的判别器，用于 VAE 对抗训练。
+    """基于时间块的 WGAN 判别器（Critic），用于 VAE 对抗训练。
 
     架构：输入投影 → 1 层 Transformer 编码器 → 标量输出头。
+    WGAN-GP 模式下输出无 sigmoid，直接输出实数分数。
 
     Args:
         d_input: 输入特征维度 d。
@@ -250,7 +251,7 @@ class Discriminator(nn.Module):
         self.encoder = TransformerEncoderBlock(
             d_model, n_heads, dropout=dropout
         )
-        # 沿时间维度池化后映射为标量
+        # 沿时间维度池化后映射为标量（Critic 输出实数分数，无 sigmoid）
         self.classifier = nn.Sequential(
             nn.Linear(d_model, d_model // 2),
             nn.GELU(),
@@ -258,19 +259,18 @@ class Discriminator(nn.Module):
         )
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        """判断输入为真实还是虚假。
+        """输出 Wasserstein 临界分数（实数）。
 
         Args:
             x: 时间序列 [B, t, d]。
 
         Returns:
-            判别 logits [B, 1]。
+            临界分数 [B, 1]。
         """
         h = self.input_proj(x)     # [B, t, d_model]
         h = self.encoder(h)        # [B, t, d_model]
         h = h.mean(dim=1)          # [B, d_model] — 时间维度池化
-        logits = self.classifier(h)  # [B, 1]
-        return logits
+        return self.classifier(h)  # [B, 1]
 
 
 # ---------------------------------------------------------------------------
@@ -301,12 +301,14 @@ class VAE(nn.Module):
         n_heads: int = 4,
         n_layers: int = 3,
         kl_weight: float = 1e-8,
+        lambda_adv: float = 0.01,
         dropout: float = 0.0,
     ):
         super().__init__()
         self.d_data = d_data
         self.d_latent = d_latent
         self.kl_weight = kl_weight
+        self.lambda_adv = lambda_adv
 
         self.encoder = Encoder(
             d_input=d_data, d_latent=d_latent, d_model=d_model,
@@ -409,6 +411,8 @@ class VAE(nn.Module):
     ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         """计算生成器（编码器 + 解码器）损失。
 
+        WGAN-GP: 对抗损失 = -mean(D(fake))，即最大化 Critic 对生成样本的评分。
+
         Args:
             y_real: 真实目标 [B, t, d]。
             y_recon: 重建目标 [B, t, d]。
@@ -421,44 +425,87 @@ class VAE(nn.Module):
         # 重建损失（MSE）
         rec_loss = F.mse_loss(y_recon, y_real)
 
-        # 对抗损失：让重建样本被判别器识别为真实样本
+        # WGAN 对抗损失：最大化 Critic 对生成样本的评分
         disc_fake = self.discriminator(y_recon)
-        adv_loss = F.binary_cross_entropy_with_logits(
-            disc_fake, torch.ones_like(disc_fake)
-        )
+        adv_loss = -disc_fake.mean()
 
         # KL 正则化
         kl = self.kl_loss(z_mu, z_logvar)
 
-        # 生成器总损失：重建 + 对抗 + KL
-        total = rec_loss + adv_loss + kl
+        # 生成器总损失：重建 + λ·对抗 + KL
+        weighted_adv = adv_loss * self.lambda_adv
+        total = rec_loss + weighted_adv + kl
 
         return total, rec_loss, kl, adv_loss
+
+    def gradient_penalty(
+        self,
+        real: torch.Tensor,
+        fake: torch.Tensor,
+    ) -> torch.Tensor:
+        """WGAN-GP 梯度惩罚项。
+
+        GP = E[(||∇_x̂ D(x̂)||_2 - 1)²], 其中 x̂ 是 real 和 fake 的随机插值。
+
+        Args:
+            real: 真实样本 [B, t, d]。
+            fake: 生成样本 [B, t, d]（需保留梯度）。
+
+        Returns:
+            标量梯度惩罚值。
+        """
+        batch_size = real.size(0)
+        # 每个样本独立的 ε ~ U(0, 1)
+        epsilon = torch.rand(batch_size, 1, 1, device=real.device)
+        # 随机插值: x̂ = ε·real + (1-ε)·fake
+        interpolated = epsilon * real + (1 - epsilon) * fake
+        interpolated.requires_grad_(True)
+
+        # 计算 Critic 对插值样本的评分
+        d_interpolated = self.discriminator(interpolated)
+
+        # 计算梯度 ∂D/∂x̂
+        gradients = torch.autograd.grad(
+            outputs=d_interpolated,
+            inputs=interpolated,
+            grad_outputs=torch.ones_like(d_interpolated),
+            create_graph=True,
+            retain_graph=True,
+        )[0]
+
+        # 计算每个样本的梯度范数
+        gradients = gradients.view(batch_size, -1)
+        gradient_norm = gradients.norm(2, dim=1)
+
+        # 惩罚项: (||∇D||₂ - 1)²
+        return ((gradient_norm - 1.0) ** 2).mean()
 
     def discriminator_loss(
         self,
         y_real: torch.Tensor,
         y_recon: torch.Tensor,
-    ) -> torch.Tensor:
-        """计算判别器损失（标准 GAN 二分类交叉熵）。
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
+        """计算 WGAN-GP 判别器（Critic）损失。
 
-        论文: L_D = BCE(D(Y), 1) + BCE(D(Ŷ), 0)
+        WGAN loss = mean(D(fake)) - mean(D(real)) + λ · gradient_penalty
 
         Args:
             y_real: 真实值 [B, t, d]。
-            y_recon: 重建值 [B, t, d]（已 detach）。
+            y_recon: 重建值 [B, t, d]（需要保留梯度进行 GP 计算）。
 
         Returns:
-            标量判别器损失。
+            (total_loss, wasserstein_distance) 元组。
         """
         disc_real = self.discriminator(y_real)
         disc_fake = self.discriminator(y_recon)
 
-        real_loss = F.binary_cross_entropy_with_logits(
-            disc_real, torch.ones_like(disc_real)
-        )
-        fake_loss = F.binary_cross_entropy_with_logits(
-            disc_fake, torch.zeros_like(disc_fake)
-        )
+        # Wasserstein 距离: D(fake) - D(real)
+        w_dist = disc_fake.mean() - disc_real.mean()
 
-        return real_loss + fake_loss
+        # 梯度惩罚（权重 λ=10，遵循 WGAN-GP 论文建议）
+        gp = self.gradient_penalty(y_real, y_recon)
+
+        # 总损失
+        total = w_dist + 10.0 * gp
+
+        return total, w_dist

@@ -12,7 +12,7 @@ vae:
   num_layers: 3
   num_heads: 4
   kl_weight: 1.0e-8
-  lr: 0.001
+  lr: 0.0005       # WGAN-GP 建议用更低学习率
   epochs: 300
   early_stop_patience: 25
 
@@ -27,7 +27,7 @@ diffusion:
   p_uncond: 0.1
   self_cond_prob: 0.4
   guidance_strength: 3.0
-  lr: 0.001
+  lr: 0.0005
   epochs: 300
   early_stop_patience: 20
   ddim_steps: 100

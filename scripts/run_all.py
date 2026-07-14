@@ -17,6 +17,11 @@ import warnings
 
 warnings.filterwarnings("ignore", message="Using `json`-module")
 
+# 将项目根目录加入路径
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+from src.utils.logger import setup_logger
+
 # 项目根目录
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
@@ -40,19 +45,39 @@ PAPER_REF = {
 
 
 def run_cmd(cmd: str, desc: str) -> int:
-    """运行命令，失败时打印错误但不中断整体流程。"""
+    """运行命令并实时输出，同时将输出写入日志文件。
+
+    使用 Popen 逐行读取 stdout，确保子进程输出通过本进程的
+    print() 函数，从而被 TeeLogger 捕获到日志文件中。
+    """
     print(f"\n{'='*60}")
     print(f">>> {desc}")
     print(f">>> {cmd}")
     print(f"{'='*60}")
     t0 = time.time()
-    result = subprocess.run(cmd, shell=True, cwd=PROJECT_ROOT)
+
+    # 使用 Popen 逐行读取，使输出经过本进程的 print → 被 Tee 捕获
+    process = subprocess.Popen(
+        cmd,
+        shell=True,
+        cwd=PROJECT_ROOT,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+        bufsize=1,
+    )
+
+    for line in process.stdout:
+        # 去掉行尾换行符，print 会自己加
+        print(line.rstrip("\n").rstrip("\r"))
+
+    process.wait()
     elapsed = time.time() - t0
-    if result.returncode != 0:
-        print(f"[!] 失败 (exit={result.returncode})，耗时 {elapsed:.0f}s")
+    if process.returncode != 0:
+        print(f"[!] 失败 (exit={process.returncode})，耗时 {elapsed:.0f}s")
     else:
         print(f"[OK] 完成，耗时 {elapsed:.0f}s")
-    return result.returncode
+    return process.returncode
 
 
 def parse_eval_output(output: str) -> dict:
@@ -91,6 +116,11 @@ def main():
         datasets = ALL_DATASETS
 
     device_flag = f" --device {args.device}" if args.device else ""
+
+    # 启动日志记录
+    dataset_list = args.datasets.replace(",", "_") if args.datasets else "all"
+    log_path = setup_logger(prefix=f"run_all_{dataset_list}")
+    print(f"日志文件: {log_path}\n")
 
     results = {}
 
@@ -145,7 +175,7 @@ def main():
                 f"{name} - 测试集评估",
             )
 
-            # 单独运行评估以捕获输出
+            # 单独运行评估以捕获输出（用于解析指标）
             eval_cmd = (
                 f'python scripts/evaluate.py --config {config_path} '
                 f'--stage1_ckpt {stage1_ckpt} --stage2_ckpt {stage2_ckpt} '
@@ -155,7 +185,12 @@ def main():
                 eval_cmd, shell=True, cwd=PROJECT_ROOT,
                 capture_output=True, text=True,
             )
-            parsed = parse_eval_output(eval_result.stdout + eval_result.stderr)
+            # 将子进程输出也写入终端（进而写入日志）
+            combined = eval_result.stdout + eval_result.stderr
+            if combined.strip():
+                print(f"\n[评估 {name} 子进程输出]")
+                print(combined)
+            parsed = parse_eval_output(combined)
             results[name] = parsed
 
     # ============================================================

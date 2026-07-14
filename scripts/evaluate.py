@@ -27,6 +27,7 @@ from src.config import load_config
 from src.data.dataset import create_dataloaders
 from src.evaluation.inference import LDTInference, load_model_from_checkpoints
 from src.evaluation.metrics import compute_all_metrics
+from src.utils.logger import setup_logger
 
 
 def main():
@@ -73,6 +74,10 @@ def main():
 
     w = args.guidance_strength or config.diffusion.guidance_strength
     ddim = args.ddim_steps or config.diffusion.ddim_steps
+
+    # 启动日志记录
+    log_path = setup_logger(prefix=f"eval_{config.dataset.name}")
+    print(f"日志文件: {log_path}\n")
 
     print(f"正在加载 {config.dataset.name} 的模型...")
     print(f"  第一阶段: {args.stage1_ckpt}")
@@ -131,11 +136,9 @@ def main():
     weights = torch.tensor([m["num_series"] for m in all_metrics], dtype=torch.float64)
     crps_vals = torch.tensor([m["crps_sum_mean"] for m in all_metrics], dtype=torch.float64)
     mse_vals = torch.tensor([m["mse_mean"] for m in all_metrics], dtype=torch.float64)
-    crps_dim_vals = torch.tensor([m["crps_dim_mean"] for m in all_metrics], dtype=torch.float64)
 
     crps_mean = (crps_vals * weights).sum() / weights.sum()
     mse_mean = (mse_vals * weights).sum() / weights.sum()
-    crps_dim_mean = (crps_dim_vals * weights).sum() / weights.sum()
     crps_std = torch.sqrt(((crps_vals - crps_mean) ** 2 * weights).sum() / weights.sum())
     mse_std = torch.sqrt(((mse_vals - mse_mean) ** 2 * weights).sum() / weights.sum())
 
@@ -143,7 +146,6 @@ def main():
     print("最终结果")
     print("=" * 50)
     print(f"CRPS-sum: {crps_mean:.4f} ± {crps_std:.4f}")
-    print(f"CRPS-dim: {crps_dim_mean:.4f}  (诊断用逐维平均)")
     print(f"MSE:      {mse_mean:.6e} ± {mse_std:.6e}")
 
     # 打印论文表 1 参考值

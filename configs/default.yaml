@@ -12,7 +12,7 @@ vae:
   num_layers: 3
   num_heads: 4
   kl_weight: 1.0e-8    # 论文: 1e-8
-  lr: 0.001
+  lr: 0.0005             # WGAN-GP 建议更低学习率
   epochs: 100
   early_stop_patience: 25
 
@@ -27,7 +27,7 @@ diffusion:
   p_uncond: 0.1
   self_cond_prob: 0.4    # 自条件触发概率 40%（论文正文：60% 设为 0）
   guidance_strength: 3.0
-  lr: 0.001               # 论文: Adam lr=1e-3
+  lr: 0.0005
   epochs: 300
   early_stop_patience: 20
   ddim_steps: 100

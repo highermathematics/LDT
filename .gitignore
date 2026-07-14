@@ -61,5 +61,8 @@ logs/
 
 images/
 
-CLAUDE.md
-PROMPT.md
+# 文档
+*.txt
+*.md
+!requirements.txt
+!README.md

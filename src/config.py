@@ -29,6 +29,7 @@ class VAECConfig:
     num_layers: int = 3               # 编码器/解码器 Transformer 层数
     num_heads: int = 4                # 注意力头数
     kl_weight: float = 1e-8           # KL 散度正则化权重
+    lambda_adv: float = 0.01          # 对抗损失权重（WGAN-GP 时建议 0.01）
     lr: float = 1e-3                  # 学习率
     epochs: int = 100                 # 最大训练轮数
     early_stop_patience: int = 25     # 早停耐心值

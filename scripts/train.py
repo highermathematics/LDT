@@ -28,6 +28,7 @@ from src.config import load_config
 from src.data.dataset import create_dataloaders
 from src.training.train_vae import train_stage1
 from src.training.train_ldt import train_stage2
+from src.utils.logger import setup_logger
 
 
 def set_seed(seed: int) -> None:
@@ -75,7 +76,10 @@ def main():
         print("CUDA 不可用，回退到 CPU。")
         config.training.device = "cpu"
 
+    # 启动日志记录（终端内容同步写入文件）
     dataset_name = config.dataset.name
+    log_path = setup_logger(prefix=f"train_{dataset_name}_stage{args.stage}")
+    print(f"日志文件: {log_path}\n")
     print(f"数据集: {dataset_name}")
     print(f"  维度: {config.dataset.dimension}")
     print(f"  预测长度: {config.dataset.prediction_length}")
