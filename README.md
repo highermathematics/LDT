@@ -421,10 +421,13 @@ python scripts/run_all.py
 
 ```bibtex
 @inproceedings{feng2024latent,
-  title={Latent Diffusion Transformer for Probabilistic Time Series Forecasting},
-  author={Feng, Shibo and Miao, Chunyan and Zhang, Zhong and Zhao, Peilin},
-  booktitle={Proceedings of the AAAI Conference on Artificial Intelligence},
-  year={2024}
+  title     = {{Latent Diffusion Transformer for Probabilistic Time Series Forecasting}},
+  author    = {Feng, Shibo and Miao, Chunyan and Zhang, Zhong and Zhao, Peilin},
+  booktitle = {AAAI Conference on Artificial Intelligence},
+  year      = {2024},
+  pages     = {11979--11987},
+  doi       = {10.1609/AAAI.V38I11.29085},
+  url       = {https://ojs.aaai.org/index.php/AAAI/article/view/29085},
 }
 ```
 
