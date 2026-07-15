@@ -24,7 +24,6 @@ import pandas as pd
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
-DATASET_DIR = PROJECT_ROOT / "datasets" / "ESA Anomaly Dataset"
 OUTPUT_DIR = PROJECT_ROOT / "datasets" / "esa_processed"
 
 
@@ -164,10 +163,28 @@ def main():
         help="Mission 编号: 1, 2, 3, 或 all",
     )
     parser.add_argument(
-        "--freq", type=str, default="1h",
-        help="重采样频率（默认: 1h）",
+        "--freq", type=str, default=None,
+        help="重采样频率，覆盖各 Mission 默认值 "
+             "(M1: 1h, M2: 5min, M3: 1h)。",
+    )
+    parser.add_argument(
+        "--data_dir", type=str, default=None,
+        help="ESA Anomaly Dataset 目录路径。"
+             "默认: datasets/ESA Anomaly Dataset/",
     )
     args = parser.parse_args()
+
+    # 数据目录
+    if args.data_dir:
+        dataset_dir = Path(args.data_dir)
+    else:
+        dataset_dir = PROJECT_ROOT / "datasets" / "ESA Anomaly Dataset"
+
+    # 各 Mission 默认重采样频率
+    # M1 原始 15min → 1h（4:1）
+    # M2 原始 18s  → 5min（~17:1），避免 1h 的 200:1 过重平滑
+    # M3 原始 15.5s → 1h（类别型为主，实际不适用）
+    DEFAULT_FREQ = {1: "1h", 2: "5min", 3: "1h"}
 
     missions = []
     if args.mission == "all":
@@ -178,21 +195,22 @@ def main():
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 
     for m_num in missions:
+        freq = args.freq or DEFAULT_FREQ.get(m_num, "1h")
         mission_name = f"ESA-Mission{m_num}"
-        mission_dir = DATASET_DIR / mission_name
+        mission_dir = dataset_dir / mission_name
         if not mission_dir.exists():
             print(f"[!] {mission_dir} 不存在，跳过")
             continue
 
         print(f"\n{'='*60}")
-        print(f"处理 {mission_name}")
+        print(f"处理 {mission_name} (重采样频率: {freq})")
         print(f"{'='*60}")
 
         temp_dir = OUTPUT_DIR / f"_temp_m{m_num}"
         temp_dir.mkdir(parents=True, exist_ok=True)
 
         matrix, channel_names = build_multivariate_matrix(
-            mission_dir, temp_dir, args.freq
+            mission_dir, temp_dir, freq
         )
 
         # 填充缺失值
