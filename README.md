@@ -271,7 +271,7 @@ LDT/
 ├── configs/                    # YAML 配置（逐数据集）
 │   ├── default.yaml            #   默认基类
 │   ├── solar.yaml              #   Solar (d=137)
-│   ├── electricity.yaml        #   Electricity (d=370)
+│   ├── electricity.yaml        #   Electricity (d=321)
 │   ├── traffic.yaml            #   Traffic (d=963)
 │   ├── taxi.yaml               #   Taxi (d=1214)
 │   ├── wikipedia.yaml          #   Wikipedia (d=2000)
