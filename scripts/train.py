@@ -98,6 +98,7 @@ def main():
             lookback_window=config.dataset.lookback_window,
             batch_size=config.training.batch_size,
             num_workers=config.training.num_workers,
+            train_split_ratio=config.dataset.train_split_ratio,
         )
 
         # 用实际维度覆盖配置
@@ -136,6 +137,7 @@ def main():
             batch_size=config.training.batch_size,
             num_workers=config.training.num_workers,
             force_dimension=saved_dim,
+            train_split_ratio=config.dataset.train_split_ratio,
         )
         print(f"  使用 Stage I 维度: {dimension} (强制 d={saved_dim})")
 

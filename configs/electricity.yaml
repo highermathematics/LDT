@@ -3,13 +3,13 @@ dataset:
   name: electricity
   prediction_length: 24
   lookback_window: 96
-  dimension: 370
+  dimension: 321
 
 vae:
-  latent_dim: 14       # √(d/2) = √(185) ≈ 14, f = 370/14 ≈ 26 ≈ 2m = 28
+  latent_dim: 12       # f=321/12≈26.8 ≥ 2m=24
   embed_dim: 128
 
 diffusion:
   diffusion_steps: 100
   embed_dim: 256
-  guidance_strength: 5.0   # 论文: deterministic 数据集用更大 w
+  guidance_strength: 5.0

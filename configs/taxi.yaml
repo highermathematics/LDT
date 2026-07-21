@@ -6,7 +6,7 @@ dataset:
   dimension: 1214
 
 vae:
-  latent_dim: 25       # √(d/2) = √(607) ≈ 25, f = 1214/25 ≈ 49 ≈ 2m = 50
+  latent_dim: 24       # f=1214/24≈50.6 ≥ 2m=48
   embed_dim: 128
 
 diffusion:

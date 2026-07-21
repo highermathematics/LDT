@@ -7,7 +7,7 @@ dataset:
   lookback_window: 96
 
 vae:
-  latent_dim: 6        # m: √(76/2)≈6.2, f=76/6≈12.7≥2m=12 ✓
+  latent_dim: 6        # m: √(76/2)≈6.2, f=76/6≈12.7≥2m=12
   embed_dim: 64
   num_layers: 3
   num_heads: 4
@@ -31,7 +31,7 @@ diffusion:
   epochs: 300
   early_stop_patience: 20
   ddim_steps: 100
-  eval_scale: 0.5
+  eval_scale: 1.0
 
 training:
   batch_size: 64

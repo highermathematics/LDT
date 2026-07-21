@@ -5,6 +5,7 @@ dataset:
   name: solar
   prediction_length: 24
   lookback_window: 96  # 4 x prediction_length
+  train_split_ratio: 0.9  # 训练/验证切分比例
 
 vae:
   latent_dim: 8        # m: √(d/2), f = d/m ≈ 2m（论文降采样约束）
@@ -12,7 +13,7 @@ vae:
   num_layers: 3
   num_heads: 4
   kl_weight: 1.0e-8    # 论文: 1e-8
-  lr: 0.0005             # WGAN-GP 建议更低学习率
+  lr: 0.0005            
   epochs: 100
   early_stop_patience: 25
 
@@ -25,13 +26,13 @@ diffusion:
   num_layers: 3
   num_heads: 8
   p_uncond: 0.1
-  self_cond_prob: 0.4    # 自条件触发概率 40%（论文正文：60% 设为 0）
+  self_cond_prob: 0.4    # 自条件触发概率 40%
   guidance_strength: 3.0
   lr: 0.0005
   epochs: 300
   early_stop_patience: 20
   ddim_steps: 100
-  eval_scale: 0.5        # 评估校准系数（时序偏差修正）
+  eval_scale: 1.0        # 评估校准系数
 
 training:
   batch_size: 64

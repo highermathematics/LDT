@@ -18,6 +18,7 @@ class DatasetConfig:
     prediction_length: int = 24       # 预测长度 t
     lookback_window: int = 96         # 历史窗口长度 (4 × prediction_length)
     dimension: int = 137              # d: 时间序列特征数
+    train_split_ratio: float = 0.9    # 训练/验证切分比例
 
 
 @dataclass

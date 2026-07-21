@@ -36,7 +36,7 @@ def _get_gluonts_dataset(name: str):
     # 将常用名称映射到 GluonTS 注册名称
     name_map = {
         "solar": "solar_nips",
-        "electricity": "electricity_nips",
+        "electricity": "electricity",
         "traffic": "traffic_nips",
         "taxi": "taxi_30min",
         "wikipedia": "wiki-rolling_nips",
@@ -86,6 +86,7 @@ def load_multivariate_data(
     prediction_length: int,
     lookback_window: Optional[int] = None,
     force_dimension: Optional[int] = None,
+    train_split_ratio: float = 0.9,
 ) -> Tuple[np.ndarray, np.ndarray, np.ndarray, int]:
     """加载并准备多元时间序列数据。
 
@@ -94,6 +95,7 @@ def load_multivariate_data(
         prediction_length: 预测长度 t。
         lookback_window: 历史长度 T，默认为 4 × prediction_length。
         force_dimension: 强制使用的维度数（None=自动检测）。
+        train_split_ratio: 训练/验证切分比例，默认 0.9。
 
     Returns:
         (train_data, val_data, test_data, dimension) 元组。
@@ -189,9 +191,9 @@ def load_multivariate_data(
     # 原文: "For validation, we use the last 10% of the training time series."
     #       (Rasul et al. 2021, TimeGrad)
     n_train = len(all_train)
-    split = int(0.9 * n_train)
-    train_data = all_train[:split]   # 前 90% 时间窗 → 训练
-    val_data = all_train[split:]     # 后 10% 时间窗 → 验证
+    split = int(train_split_ratio * n_train)
+    train_data = all_train[:split]   # 前 train_split_ratio → 训练
+    val_data = all_train[split:]     # 后 (1-train_split_ratio) → 验证
     test_data = all_test
 
     return train_data, val_data, test_data, dimension
@@ -232,6 +234,7 @@ def create_dataloaders(
     batch_size: int = 64,
     num_workers: int = 4,
     force_dimension: Optional[int] = None,
+    train_split_ratio: float = 0.9,
 ) -> Tuple[DataLoader, DataLoader, DataLoader, int]:
     """为指定数据集创建训练/验证/测试 DataLoader。
 
@@ -241,6 +244,7 @@ def create_dataloaders(
         lookback_window: 历史长度 T。
         batch_size: 批次大小。
         num_workers: DataLoader 工作进程数。
+        train_split_ratio: 训练/验证切分比例，默认 0.9。
 
     Returns:
         (train_loader, val_loader, test_loader, dimension) 元组。
@@ -253,7 +257,8 @@ def create_dataloaders(
         num_workers = 0
 
     train_data, val_data, test_data, dimension = load_multivariate_data(
-        name, prediction_length, lookback_window, force_dimension=force_dimension
+        name, prediction_length, lookback_window,
+        force_dimension=force_dimension, train_split_ratio=train_split_ratio,
     )
 
     train_ds = TimeSeriesWindowDataset(train_data, lookback_window, prediction_length)
